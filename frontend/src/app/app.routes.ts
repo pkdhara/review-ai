@@ -8,6 +8,11 @@ export const routes: Routes = [
       import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
   },
   {
+    path: 'pending-prs',
+    loadComponent: () =>
+      import('./features/pending-prs/pending-prs.component').then((m) => m.PendingPrsComponent),
+  },
+  {
     path: 'reviews/:id/progress',
     loadComponent: () =>
       import('./features/review-progress/review-progress.component').then(

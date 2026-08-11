@@ -5,6 +5,7 @@ import {
   AppSettings,
   Finding,
   PagedResponse,
+  PendingPrsResponse,
   Review,
   ReviewSummary,
   StartReviewRequest,
@@ -16,6 +17,11 @@ export class ReviewApiService {
   private readonly base = environment.apiUrl;
 
   constructor(private http: HttpClient) {}
+
+  getPendingPrs(onlyInternalReview = true): Observable<PendingPrsResponse> {
+    const params = new HttpParams().set('only_internal_review', onlyInternalReview);
+    return this.http.get<PendingPrsResponse>(`${this.base}/reviews/pending-prs`, { params });
+  }
 
   startReview(req: StartReviewRequest): Observable<Review> {
     return this.http.post<Review>(`${this.base}/reviews/start`, req);

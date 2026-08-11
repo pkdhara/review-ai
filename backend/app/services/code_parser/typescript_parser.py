@@ -4,9 +4,12 @@ Provides token-efficient class/component structure extraction, HTML template rea
 and method body retrieval for TypeScript and Angular applications.
 """
 
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+IGNORED_DIRS = {".git", "node_modules", "target", "dist", "build", ".idea", ".vscode", ".angular", "coverage", ".next", "vendor"}
 
 
 class TypeScriptCodeParser:
@@ -19,6 +22,18 @@ class TypeScriptCodeParser:
     3. Method Bodies: On-demand retrieval of exact method implementations.
     4. Symbol Search & Reference Discovery in worktree.
     """
+
+    @staticmethod
+    def _safe_walk(worktree_path: Path, extensions: tuple = (), filename: Optional[str] = None) -> List[Path]:
+        results = []
+        for root, dirs, files in os.walk(worktree_path):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+            for f in files:
+                if filename and f == filename:
+                    results.append(Path(root) / f)
+                elif extensions and any(f.endswith(ext) for ext in extensions):
+                    results.append(Path(root) / f)
+        return results
 
     @staticmethod
     def extract_template_content(worktree_path: str, template_path_or_url: str) -> Optional[str]:
@@ -37,9 +52,9 @@ class TypeScriptCodeParser:
             except Exception:
                 pass
 
-        # Try matching filename under worktree
+        # Try matching filename under worktree (safely avoiding node_modules and .git)
         file_name = Path(clean_p).name
-        matches = list(wt.rglob(file_name))
+        matches = TypeScriptCodeParser._safe_walk(wt, filename=file_name)
         if matches:
             try:
                 return matches[0].read_text(encoding="utf-8", errors="replace")
@@ -157,14 +172,16 @@ class TypeScriptCodeParser:
             })
 
         # Field declarations (e.g., @Input() productId: string = '';)
-        field_pattern = r"^\s*(@(?:Input|Output|HostBinding|ViewChild|Select)(?:\([^)]*\))?\s*)*(public|private|protected)?\s*(static)?\s*(readonly)?\s*([A-Za-z0-9_]+)\s*(?:\?\s*)?(?::\s*([A-Za-z0-9_<>\[\]\s|&?:.]+))?\s*(?:=.*)?;$"
+        field_pattern = r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|private|protected)?\s*(static)?\s*(readonly)?\s*([A-Za-z0-9_]+)\s*(?:\?\s*)?(?::\s*([^=;]+))?\s*(?:=.*)?;$"
         for line in lines:
+            if ";" not in line:
+                continue
             m = re.match(field_pattern, line)
             if m:
-                deco_raw, vis, is_static, is_readonly, f_name, f_type = m.groups()
+                vis, is_static, is_readonly, f_name, f_type = m.groups()
                 if f_name in ("constructor", "if", "for", "while", "return", "import", "export"):
                     continue
-                f_decos = [a.strip() for a in re.findall(r"@\w+", deco_raw or "")]
+                f_decos = [a.strip() for a in re.findall(r"@\w+", line)]
                 fields.append({
                     "name": f_name,
                     "type": (f_type or "any").strip(),
@@ -197,18 +214,20 @@ class TypeScriptCodeParser:
                 break
 
         method_hdr_pattern = (
-            r"^\s*(@\w+(?:\([^)]*\))?\s*)*"
+            r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*"
             r"(public|private|protected)?\s*(async)?\s*(static)?\s*(get|set)?\s*"
-            r"([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?::\s*([A-Za-z0-9_<>\[\]\s|&?:.]+))?\s*\{"
+            r"([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?::\s*([^{]+))?\s*\{"
         )
         for idx, line in enumerate(lines, 1):
+            if "{" not in line or "(" not in line:
+                continue
             mm = re.search(method_hdr_pattern, line)
             if mm:
-                deco_raw, vis, is_async, is_static, accessor, m_name, params_raw, ret_type = mm.groups()
+                vis, is_async, is_static, accessor, m_name, params_raw, ret_type = mm.groups()
                 if m_name in ("constructor", "if", "for", "while", "switch", "catch", "function"):
                     continue
 
-                m_decos = [a.strip() for a in re.findall(r"@\w+", deco_raw or "")]
+                m_decos = [a.strip() for a in re.findall(r"@\w+", line)]
                 params = [p.strip() for p in params_raw.split(",") if p.strip()]
                 full_name = f"{accessor} {m_name}".strip() if accessor else m_name
 
@@ -253,7 +272,7 @@ class TypeScriptCodeParser:
         clean_mname = method_name.split()[-1]
 
         hdr_regex = re.compile(
-            rf"\b(get|set)?\s*{re.escape(clean_mname)}\s*\([^)]*\)\s*(?::\s*[A-Za-z0-9_<>\[\]\s|&?:.]+)?\s*\{{"
+            rf"\b(get|set)?\s*{re.escape(clean_mname)}\s*\([^)]*\)\s*(?::\s*[^{{]+)?\s*\{{"
         )
 
         start_line = -1
@@ -361,22 +380,22 @@ class TypeScriptCodeParser:
 
         pattern = re.compile(rf"\b{re.escape(query)}\b", re.IGNORECASE)
         wt = Path(worktree_path)
-        for ext in ("*.ts", "*.html"):
-            for p in wt.rglob(ext):
-                try:
-                    content = p.read_text(encoding="utf-8", errors="replace")
-                    lines = content.splitlines()
-                    for idx, line in enumerate(lines, 1):
-                        if pattern.search(line):
-                            results.append({
-                                "file_path": str(p.relative_to(wt)),
-                                "line_number": idx,
-                                "line_content": line.strip(),
-                            })
-                            if len(results) >= 50:
-                                return results
-                except Exception:
-                    continue
+        matching_files = TypeScriptCodeParser._safe_walk(wt, extensions=(".ts", ".html"))
+        for p in matching_files:
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                for idx, line in enumerate(lines, 1):
+                    if pattern.search(line):
+                        results.append({
+                            "file_path": str(p.relative_to(wt)),
+                            "line_number": idx,
+                            "line_content": line.strip(),
+                        })
+                        if len(results) >= 50:
+                            return results
+            except Exception:
+                continue
         return results
 
     @staticmethod
@@ -398,31 +417,31 @@ class TypeScriptCodeParser:
         import_pattern = re.compile(rf"^\s*import\b.*?\b{re.escape(symbol)}\b")
 
         wt_path = Path(worktree_path)
-        for ext in ("*.ts", "*.html"):
-            for p in wt_path.rglob(ext):
-                try:
-                    content = p.read_text(encoding="utf-8", errors="replace")
-                    lines = content.splitlines()
-                    for idx, line in enumerate(lines, 1):
-                        stripped = line.strip()
-                        if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
-                            continue
+        matching_files = TypeScriptCodeParser._safe_walk(wt_path, extensions=(".ts", ".html"))
+        for p in matching_files:
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                for idx, line in enumerate(lines, 1):
+                    stripped = line.strip()
+                    if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                        continue
 
-                        if pattern.search(stripped):
-                            match_type = "usage"
-                            if import_pattern.search(stripped):
-                                match_type = "import"
-                            elif def_pattern.search(stripped):
-                                match_type = "definition"
+                    if pattern.search(stripped):
+                        match_type = "usage"
+                        if import_pattern.search(stripped):
+                            match_type = "import"
+                        elif def_pattern.search(stripped):
+                            match_type = "definition"
 
-                            results.append({
-                                "file_path": str(p.relative_to(wt_path)),
-                                "line_number": idx,
-                                "match_type": match_type,
-                                "line_content": stripped,
-                            })
-                            if len(results) >= 50:
-                                return results
-                except Exception:
-                    continue
+                        results.append({
+                            "file_path": str(p.relative_to(wt_path)),
+                            "line_number": idx,
+                            "match_type": match_type,
+                            "line_content": stripped,
+                        })
+                        if len(results) >= 50:
+                            return results
+            except Exception:
+                continue
         return results

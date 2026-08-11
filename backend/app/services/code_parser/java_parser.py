@@ -3,9 +3,12 @@ Java Code Parser & AST Structure Extractor
 Provides clean, token-efficient Java class structure extraction and method body retrieval.
 """
 
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+IGNORED_DIRS = {".git", "node_modules", "target", "dist", "build", ".idea", ".vscode", ".angular", "coverage", ".next", "vendor"}
 
 
 class JavaCodeParser:
@@ -15,6 +18,16 @@ class JavaCodeParser:
        fields, constructors, and method signatures (WITHOUT method bodies).
     2. Method Bodies: On-demand retrieval of exact method implementations.
     """
+
+    @staticmethod
+    def _safe_walk(worktree_path: Path, extensions: tuple = ()) -> List[Path]:
+        results = []
+        for root, dirs, files in os.walk(worktree_path):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+            for f in files:
+                if extensions and any(f.endswith(ext) for ext in extensions):
+                    results.append(Path(root) / f)
+        return results
 
     @staticmethod
     def parse_class_structure(code: str, file_path: str = "") -> Dict[str, Any]:
@@ -68,12 +81,14 @@ class JavaCodeParser:
 
         # Fields
         fields = []
-        field_pattern = r"^\s*((?:@\w+(?:\([^)]*\))?\s+)*)?(public|protected|private|package-private)?\s*(static)?\s*(final)?\s+([A-Za-z0-9_<>?,.\s\[\]]+)\s+([A-Za-z0-9_]+)\s*(?:=.*)?;$"
+        field_pattern = r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|protected|private)?\s*(static)?\s*(final)?\s+([A-Za-z0-9_<>?,.\[\]]+)\s+([A-Za-z0-9_]+)\s*(?:=.*)?;$"
         for line in lines:
+            if ";" not in line:
+                continue
             m = re.match(field_pattern, line)
             if m and not any(kw in line for kw in ["return", "class", "interface", "void"]):
-                annos_raw, vis, is_static, is_final, f_type, f_name = m.groups()
-                field_annos = [a.strip() for a in re.findall(r"@\w+", annos_raw or "")]
+                vis, is_static, is_final, f_type, f_name = m.groups()
+                field_annos = [a.strip() for a in re.findall(r"@\w+", line)]
                 fields.append({
                     "name": f_name,
                     "type": f_type.strip(),
@@ -88,7 +103,7 @@ class JavaCodeParser:
         constructors = []
 
         # Find method/constructor headers
-        method_hdr_pattern = r"((?:@\w+(?:\([^)]*\))?\s+)*)?\s*(public|protected|private)?\s*(static)?\s*(final)?\s*(abstract|synchronized)?\s*([A-Za-z0-9_<>?,.\s\[\]]+)?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[A-Za-z0-9_,\s]+)?\s*\{"
+        method_hdr_pattern = r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|protected|private)?\s*(static)?\s*(final)?\s*(abstract|synchronized)?\s*([A-Za-z0-9_<>?,.\[\]]+)?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\s*\{"
         
         pending_annos = []
         for idx, line in enumerate(lines, 1):
@@ -97,16 +112,24 @@ class JavaCodeParser:
                 pending_annos.extend(re.findall(r"@\w+", stripped))
                 continue
 
+            if not stripped.endswith("{") or "(" not in stripped:
+                if not stripped.startswith("@"):
+                    pending_annos = []
+                continue
+
+            if any(stripped.startswith(kw) for kw in ("if", "for", "while", "switch", "catch", "else", "try", "finally", "return", "throw")):
+                pending_annos = []
+                continue
+
             m = re.search(method_hdr_pattern, line)
             if m:
-                annos_raw, vis, is_static, is_final, is_abstract, ret_type, m_name, params_raw = m.groups()
+                vis, is_static, is_final, is_abstract, ret_type, m_name, params_raw = m.groups()
                 
-                # Ignore control flow structures like if, for, while, switch
                 if m_name in ("if", "for", "while", "switch", "catch"):
                     pending_annos = []
                     continue
 
-                m_annos = pending_annos + [a.strip() for a in re.findall(r"@\w+", annos_raw or "")]
+                m_annos = pending_annos + [a.strip() for a in re.findall(r"@\w+", line)]
                 pending_annos = []
                 params = [p.strip() for p in params_raw.split(",") if p.strip()]
 
@@ -156,7 +179,7 @@ class JavaCodeParser:
         Uses bracket matching to extract the full body.
         """
         lines = code.splitlines()
-        hdr_regex = re.compile(rf"\b{re.escape(method_name)}\s*\([^)]*\)\s*(?:throws\s+[A-Za-z0-9_,\s]+)?\s*\{{")
+        hdr_regex = re.compile(rf"\b{re.escape(method_name)}\s*\([^)]*\)\s*(?:throws\s+[^{{]+)?\s*\{{")
 
         start_line = -1
         start_char_idx = -1
@@ -260,7 +283,8 @@ class JavaCodeParser:
             return results
 
         pattern = re.compile(rf"\b{re.escape(query)}\b", re.IGNORECASE)
-        for p in Path(worktree_path).rglob("*.java"):
+        matching_files = JavaCodeParser._safe_walk(Path(worktree_path), extensions=(".java",))
+        for p in matching_files:
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 lines = content.splitlines()
@@ -296,7 +320,8 @@ class JavaCodeParser:
         import_pattern = re.compile(rf"^\s*import\b.*?\b{re.escape(symbol)}\b")
 
         wt_path = Path(worktree_path)
-        for p in wt_path.rglob("*.java"):
+        matching_files = JavaCodeParser._safe_walk(wt_path, extensions=(".java",))
+        for p in matching_files:
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 lines = content.splitlines()

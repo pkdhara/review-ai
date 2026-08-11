@@ -13,11 +13,35 @@ import { CommonModule } from '@angular/common';
       <nav class="sidebar">
         <div class="sidebar-logo">
           <div class="logo-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Outer glowing hexagonal shield -->
+              <path d="M12 2L3.5 7V17L12 22L20.5 17V7L12 2Z" fill="url(#shield-bg)" stroke="url(#shield-border)" stroke-width="1.5" stroke-linejoin="round"/>
+              <!-- Inner AI node network & checkmark -->
+              <path d="M12 6L7.5 9.5V14.5L12 18L16.5 14.5V9.5L12 6Z" fill="url(#inner-node)" fill-opacity="0.3" stroke="url(#inner-node)" stroke-width="1.2"/>
+              <!-- Central Code Verification Spark -->
+              <path d="M9 12L11 14L15.5 9.5" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="8.5" stroke="#a855f7" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
+              <defs>
+                <linearGradient id="shield-bg" x1="3.5" y1="2" x2="20.5" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#1e1b4b"/>
+                  <stop offset="1" stop-color="#0f172a"/>
+                </linearGradient>
+                <linearGradient id="shield-border" x1="3.5" y1="2" x2="20.5" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#818cf8"/>
+                  <stop offset="0.5" stop-color="#6366f1"/>
+                  <stop offset="1" stop-color="#38bdf8"/>
+                </linearGradient>
+                <linearGradient id="inner-node" x1="7.5" y1="6" x2="16.5" y2="18" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#c084fc"/>
+                  <stop offset="1" stop-color="#6366f1"/>
+                </linearGradient>
+              </defs>
             </svg>
           </div>
-          <span class="logo-text">ReviewAI</span>
+          <div class="logo-text-wrapper">
+            <span class="logo-text">Review<span class="logo-ai">AI</span></span>
+            <span class="logo-tagline">Code Intelligence</span>
+          </div>
         </div>
 
         <div class="nav-section">
@@ -28,6 +52,15 @@ import { CommonModule } from '@angular/common';
               <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
             </svg>
             Dashboard
+          </a>
+          <a routerLink="/pending-prs" routerLinkActive="active" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="18" cy="18" r="3"/>
+              <circle cx="6" cy="6" r="3"/>
+              <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
+              <line x1="6" y1="9" x2="6" y2="21"/>
+            </svg>
+            Pending PRs
           </a>
           <a routerLink="/settings" routerLinkActive="active" class="nav-item">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -77,23 +110,52 @@ import { CommonModule } from '@angular/common';
     }
 
     .logo-icon {
-      width: 40px;
-      height: 40px;
-      background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
-      border-radius: 10px;
+      width: 42px;
+      height: 42px;
+      background: radial-gradient(circle at 30% 30%, rgba(99,102,241,0.25), rgba(15,23,42,0.8));
+      border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
       color: white;
-      box-shadow: 0 4px 15px rgba(99,102,241,0.4);
+      border: 1px solid rgba(99,102,241,0.3);
+      box-shadow: 0 4px 20px rgba(99,102,241,0.25), inset 0 1px 1px rgba(255,255,255,0.15);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+
+      &:hover {
+        transform: translateY(-1px) scale(1.02);
+        box-shadow: 0 6px 24px rgba(99,102,241,0.4), inset 0 1px 1px rgba(255,255,255,0.25);
+      }
+    }
+
+    .logo-text-wrapper {
+      display: flex;
+      flex-direction: column;
     }
 
     .logo-text {
-      font-size: 1.1rem;
+      font-size: 1.15rem;
       font-weight: 800;
-      background: linear-gradient(135deg, #fff, var(--color-primary-light));
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      line-height: 1.1;
+    }
+
+    .logo-ai {
+      background: linear-gradient(135deg, #818cf8 0%, #38bdf8 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      font-weight: 900;
+      margin-left: 1px;
+    }
+
+    .logo-tagline {
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-top: 2px;
     }
 
     .nav-section {

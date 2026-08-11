@@ -96,6 +96,33 @@ class ReviewListResponse(BaseModel):
     page_size: int
 
 
+# ── Pending PRs ───────────────────────────────────────────────────────────────
+
+class PendingPrItem(BaseModel):
+    pr_number:              int
+    pr_title:               str
+    pr_url:                 str
+    pr_author:              Optional[str] = None
+    pr_author_email:        Optional[str] = None
+    source_branch:          Optional[str] = None
+    target_branch:          Optional[str] = None
+    jira_key:               Optional[str] = None
+    jira_url:               Optional[str] = None
+    jira_status:            Optional[str] = None
+    workspace:              str
+    repo_slug:              str
+    created_on:             Optional[str] = None
+    updated_on:             Optional[str] = None
+    existing_review_id:     Optional[str] = None
+    existing_review_status: Optional[str] = None
+
+
+class PendingPrsResponse(BaseModel):
+    items: list[PendingPrItem]
+    total: int
+
+
+
 # ── Findings ─────────────────────────────────────────────────────────────────
 
 class FindingResponse(OrmBase):

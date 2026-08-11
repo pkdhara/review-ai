@@ -11,6 +11,10 @@ export interface Review {
   source_branch?: string;
   target_branch?: string;
   author?: string;
+  workspace?: string;
+  repo_slug?: string;
+  bitbucket_workspace?: string;
+  bitbucket_repo_slug?: string;
   jira_key?: string;
   jira_url?: string;
   current_agent?: string;
@@ -100,3 +104,28 @@ export interface PagedResponse<T> {
   page: number;
   page_size: number;
 }
+
+export interface PendingPrItem {
+  pr_number: number;
+  pr_title: string;
+  pr_url: string;
+  pr_author?: string;
+  pr_author_email?: string;
+  source_branch?: string;
+  target_branch?: string;
+  jira_key?: string;
+  jira_url?: string;
+  jira_status?: string;
+  workspace: string;
+  repo_slug: string;
+  created_on?: string;
+  updated_on?: string;
+  existing_review_id?: string;
+  existing_review_status?: string;
+}
+
+export interface PendingPrsResponse {
+  items: PendingPrItem[];
+  total: number;
+}
+

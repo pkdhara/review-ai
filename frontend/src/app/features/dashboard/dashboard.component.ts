@@ -160,6 +160,16 @@ import { firstValueFrom } from 'rxjs';
                           @if (review.pr_author || review.author) {
                             <span class="author-tag">👤 {{ review.pr_author || review.author }}</span>
                           }
+                          @if (getBitbucketPrUrl(review)) {
+                            <a
+                              [href]="getBitbucketPrUrl(review)"
+                              target="_blank"
+                              rel="noopener"
+                              class="bitbucket-tag-link"
+                              (click)="$event.stopPropagation()"
+                              title="Open Pull Request in Bitbucket"
+                            ><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M1.5 2.25A.75.75 0 0 0 .75 3v.75l2.25 16.5a.75.75 0 0 0 .742.649h16.516a.75.75 0 0 0 .742-.649L23.25 3.75V3a.75.75 0 0 0-.75-.75H1.5zM14.5 15h-5L8 9h8l-1.5 6z"/></svg><span>PR #{{ review.pr_number }}</span></a>
+                          }
                           @if (review.jira_key) {
                             <a
                               [href]="review.jira_url || ('https://freshconcepts.atlassian.net/browse/' + review.jira_key)"
@@ -532,6 +542,29 @@ import { firstValueFrom } from 'rxjs';
       }
     }
 
+    .bitbucket-tag-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      line-height: 1.2;
+      background: rgba(38, 132, 255, 0.12);
+      color: #60a5fa;
+      border: 1px solid rgba(38, 132, 255, 0.25);
+      text-decoration: none;
+      transition: all var(--transition-fast);
+
+      &:hover {
+        background: rgba(38, 132, 255, 0.22);
+        color: #93c5fd;
+        transform: translateY(-1px);
+      }
+    }
+
     @media (max-width: 900px) {
       .dashboard-grid { grid-template-columns: 1fr; }
       .manual-inputs { grid-template-columns: 1fr 1fr; }
@@ -597,6 +630,16 @@ export class DashboardComponent implements OnInit {
     if (confirm(`Are you sure you want to remove ${review.pr_title || 'PR #' + review.pr_number} from the review list?`)) {
       await this.store.deleteReview(review.id);
     }
+  }
+
+  getBitbucketPrUrl(review: Review): string {
+    if (review.pr_url) return review.pr_url;
+    const ws = review.workspace || review.bitbucket_workspace || 'freshconcepts';
+    const repo = review.repo_slug || review.bitbucket_repo_slug || 'fc-angular';
+    if (review.pr_number) {
+      return `https://bitbucket.org/${ws}/${repo}/pull-requests/${review.pr_number}`;
+    }
+    return '';
   }
 
   getReviewRoute(review: Review): string[] {

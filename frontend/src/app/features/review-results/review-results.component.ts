@@ -52,10 +52,14 @@ const CATEGORY_TABS = [
                     🔗 {{ r.jira_key }}
                   </a>
                 }
-                @if (r.pr_url) {
-                  <a [href]="r.pr_url" target="_blank" rel="noopener" class="pr-external-link">
-                    ↗ Bitbucket PR
-                  </a>
+                @if (getBitbucketPrUrl(r)) {
+                  <a
+                    [href]="getBitbucketPrUrl(r)"
+                    target="_blank"
+                    rel="noopener"
+                    class="pr-external-link"
+                    [title]="'Open Bitbucket Pull Request: ' + getBitbucketPrUrl(r)"
+                  ><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M1.5 2.25A.75.75 0 0 0 .75 3v.75l2.25 16.5a.75.75 0 0 0 .742.649h16.516a.75.75 0 0 0 .742-.649L23.25 3.75V3a.75.75 0 0 0-.75-.75H1.5zM14.5 15h-5L8 9h8l-1.5 6z"/></svg><span>Bitbucket PR #{{ r.pr_number }} ↗</span></a>
                 }
               </div>
             }
@@ -253,9 +257,32 @@ const CATEGORY_TABS = [
     }
 
     .pr-external-link {
-      color: var(--color-text-muted); font-size: 0.75rem; font-weight: 500;
-      text-decoration: none; transition: color var(--transition-fast);
-      &:hover { color: var(--color-primary-light); text-decoration: underline; }
+      background: rgba(38, 132, 255, 0.12);
+      color: #60a5fa;
+      border: 1px solid rgba(38, 132, 255, 0.3);
+      border-radius: 6px;
+      padding: 3px 12px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all var(--transition-fast);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+
+      .url-text {
+        font-weight: 500;
+        opacity: 0.85;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+      }
+
+      &:hover {
+        background: rgba(38, 132, 255, 0.25);
+        color: #93c5fd;
+        box-shadow: 0 0 12px rgba(38, 132, 255, 0.3);
+        transform: translateY(-1px);
+      }
     }
 
     .summary-bar {
@@ -442,6 +469,16 @@ export class ReviewResultsComponent implements OnInit {
 
   getFileName(path: string): string {
     return path.split('/').pop() || path;
+  }
+
+  getBitbucketPrUrl(r: any): string {
+    if (r?.pr_url) return r.pr_url;
+    const ws = r?.workspace || r?.bitbucket_workspace || 'freshconcepts';
+    const repo = r?.repo_slug || r?.bitbucket_repo_slug || 'fc-angular';
+    if (r?.pr_number) {
+      return `https://bitbucket.org/${ws}/${repo}/pull-requests/${r.pr_number}`;
+    }
+    return '';
   }
 
   formatRecommendation(rec?: string): string {

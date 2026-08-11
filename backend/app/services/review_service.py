@@ -25,6 +25,8 @@ from app.schemas.schemas import (
     BulkActionResponse,
     FindingListResponse,
     FindingResponse,
+    PendingPrItem,
+    PendingPrsResponse,
     PublishResponse,
     ReviewListResponse,
     ReviewResponse,
@@ -33,6 +35,7 @@ from app.schemas.schemas import (
 )
 from app.services.bitbucket_service import BitbucketService
 from app.services.encryption_service import EncryptionService
+from app.services.jira_service import JiraService
 
 log = get_logger(__name__)
 
@@ -525,6 +528,112 @@ class ReviewService:
             message=f"Published {published}, failed {failed}.",
             errors=errors,
         )
+
+    # ── Pending PRs ───────────────────────────────────────────────────────────
+
+    async def get_pending_prs(
+        self,
+        user_id: uuid.UUID,
+        only_internal_review: bool = True,
+    ) -> PendingPrsResponse:
+        cfg = await self.settings.get(user_id)
+        if not cfg:
+            cfg = await self.settings.get()
+
+        enc = EncryptionService()
+        bb_token = enc.decrypt(cfg.bitbucket_access_token) if cfg and cfg.bitbucket_access_token else ""
+        jira_token = enc.decrypt(cfg.jira_api_token) if cfg and cfg.jira_api_token else ""
+        workspace = (cfg.bitbucket_workspace if cfg and cfg.bitbucket_workspace else "") or "freshconcepts"
+
+        bb = BitbucketService(
+            workspace=workspace,
+            access_token=bb_token,
+            email=cfg.jira_email if cfg else None,
+        )
+
+        base_jira_url = (cfg.jira_base_url if cfg and cfg.jira_base_url else "") or "https://freshconcepts.atlassian.net"
+        if base_jira_url and not base_jira_url.startswith("http"):
+            base_jira_url = f"https://{base_jira_url}"
+
+        jira_service = None
+        if jira_token and cfg and cfg.jira_email:
+            try:
+                jira_service = JiraService(
+                    base_url=base_jira_url,
+                    email=cfg.jira_email,
+                    api_token=jira_token,
+                )
+            except Exception as exc:
+                log.warning("jira.init_failed_in_pending_prs", error=str(exc))
+
+        items: list[PendingPrItem] = []
+        try:
+            prs_data = await bb._get(f"/repositories/{workspace}/fc-angular/pullrequests", params={"state": "OPEN"})
+            prs = prs_data.get("values", [])
+
+            db_reviews, _ = await self.reviews.list_reviews(page=1, page_size=100)
+            existing_by_pr = {r.pr_number: r for r in db_reviews if r.pr_number}
+
+            for pr in prs:
+                pr_num = pr.get("id")
+                title = pr.get("title", "")
+                source_branch = pr.get("source", {}).get("branch", {}).get("name", "")
+                target_branch = pr.get("destination", {}).get("branch", {}).get("name", "")
+                pr_url = pr.get("links", {}).get("html", {}).get("href", "")
+
+                author_data = pr.get("author", {})
+                author_name = (
+                    author_data.get("display_name")
+                    or author_data.get("nickname")
+                    or (author_data.get("user") or {}).get("display_name")
+                )
+
+                jira_key = (
+                    BitbucketService.extract_jira_key(source_branch)
+                    or BitbucketService.extract_jira_key(title)
+                )
+                jira_url = f"{base_jira_url.rstrip('/')}/browse/{jira_key}" if jira_key else None
+                existing = existing_by_pr.get(pr_num)
+
+                jira_status = None
+                if jira_key and jira_service:
+                    try:
+                        issue = await jira_service.get_issue(jira_key)
+                        jira_status = (issue.get("fields") or {}).get("status", {}).get("name")
+                    except Exception as e:
+                        log.debug("jira.fetch_status_failed", key=jira_key, error=str(e))
+
+                # Filter by Internal Review status if requested
+                if only_internal_review:
+                    if not jira_status:
+                        continue
+                    normalized_status = jira_status.lower().strip()
+                    if "internal review" not in normalized_status and "in review" not in normalized_status:
+                        continue
+
+                items.append(
+                    PendingPrItem(
+                        pr_number=pr_num,
+                        pr_title=title,
+                        pr_url=pr_url,
+                        pr_author=author_name,
+                        source_branch=source_branch,
+                        target_branch=target_branch,
+                        jira_key=jira_key,
+                        jira_url=jira_url,
+                        jira_status=jira_status,
+                        workspace=workspace,
+                        repo_slug="fc-angular",
+                        created_on=pr.get("created_on"),
+                        updated_on=pr.get("updated_on"),
+                        existing_review_id=str(existing.id) if existing else None,
+                        existing_review_status=existing.status.value if existing else None,
+                    )
+                )
+        except Exception as exc:
+            log.error("bitbucket.fetch_pending_prs_failed", error=str(exc))
+
+        return PendingPrsResponse(items=items, total=len(items))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

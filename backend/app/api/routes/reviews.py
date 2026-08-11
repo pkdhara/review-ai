@@ -20,6 +20,7 @@ from app.db.database import get_db
 from app.db.redis import stream_progress
 from app.schemas.schemas import (
     FindingListResponse,
+    PendingPrsResponse,
     ReviewListResponse,
     ReviewResponse,
     ReviewSummaryResponse,
@@ -52,6 +53,16 @@ async def list_reviews(
 ):
     """List all reviews for the current user, newest first."""
     return await service.list_reviews(user_id, page, page_size)
+
+
+@router.get("/pending-prs", response_model=PendingPrsResponse)
+async def get_pending_prs(
+    only_internal_review: bool = Query(True),
+    service: ReviewService = Depends(get_review_service),
+    user_id: uuid.UUID = Depends(get_current_user_id),
+):
+    """Fetch open pull requests from Bitbucket available to review, filtered by Jira Internal Review status by default."""
+    return await service.get_pending_prs(user_id, only_internal_review=only_internal_review)
 
 
 @router.get("/{review_id}", response_model=ReviewResponse)

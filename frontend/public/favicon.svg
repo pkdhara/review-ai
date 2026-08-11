@@ -1,0 +1,24 @@
+<svg width="64" height="64" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="32" height="32" rx="8" fill="#0f172a"/>
+  <!-- Outer glowing hexagonal shield -->
+  <path d="M16 3L4.5 9.5V22.5L16 29L27.5 22.5V9.5L16 3Z" fill="url(#shield-bg)" stroke="url(#shield-border)" stroke-width="1.8" stroke-linejoin="round"/>
+  <!-- Inner AI node network & checkmark -->
+  <path d="M16 8L10 11.5V18.5L16 22L22 18.5V11.5L16 8Z" fill="url(#inner-node)" fill-opacity="0.3" stroke="url(#inner-node)" stroke-width="1.4"/>
+  <!-- Central Code Verification Spark -->
+  <path d="M12.5 16L14.8 18.3L20 13" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="shield-bg" x1="4.5" y1="3" x2="27.5" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="shield-border" x1="4.5" y1="3" x2="27.5" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#818cf8"/>
+      <stop offset="0.5" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="inner-node" x1="10" y1="8" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c084fc"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+  </defs>
+</svg>

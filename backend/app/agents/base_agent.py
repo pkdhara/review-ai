@@ -50,6 +50,45 @@ class BaseAgent:
             worktree_path=worktree_path
         )
 
+    @staticmethod
+    def _clean_and_parse_json(text: str) -> Any:
+        text = (text or "").strip()
+        if not text:
+            raise json.JSONDecodeError("Empty response content", text, 0)
+
+        # 1. Try direct parse first with strict=False to handle raw newlines in string fields
+        try:
+            return json.loads(text, strict=False)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Handle outer markdown code block ```json ... ```
+        if text.startswith("```"):
+            first_line_end = text.find("\n")
+            if first_line_end != -1:
+                body = text[first_line_end + 1:]
+                last_fence = body.rfind("```")
+                if last_fence != -1:
+                    body = body[:last_fence].strip()
+                try:
+                    return json.loads(body, strict=False)
+                except json.JSONDecodeError:
+                    pass
+
+        # 3. Extract JSON substring between outer brackets "[" ... "]" or "{" ... "}"
+        first_bracket = min([i for i in (text.find("["), text.find("{")) if i != -1], default=-1)
+        last_bracket = max(text.rfind("]"), text.rfind("}"))
+
+        if first_bracket != -1 and last_bracket > first_bracket:
+            candidate = text[first_bracket:last_bracket + 1]
+            try:
+                return json.loads(candidate, strict=False)
+            except json.JSONDecodeError:
+                pass
+
+        # Final fallback: attempt standard parse (will raise JSONDecodeError if invalid)
+        return json.loads(text, strict=False)
+
     async def _invoke_llm_json(
         self,
         system_prompt: str,
@@ -75,13 +114,7 @@ class BaseAgent:
                 if response.error:
                     raise Exception(response.error)
                     
-                text = response.content
-                # Strip markdown code fences if present
-                if "```json" in text:
-                    text = text.split("```json")[1].split("```")[0].strip()
-                elif "```" in text:
-                    text = text.split("```")[1].split("```")[0].strip()
-                result = json.loads(text)
+                result = self._clean_and_parse_json(response.content)
 
                 ctx_svc = self._get_code_context_service({"review_id": self._review_id})
                 ctx_usage = ctx_svc.get_usage_metrics() if ctx_svc else {}
