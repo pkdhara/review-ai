@@ -29,6 +29,13 @@ class FindingDict(TypedDict, total=False):
     review_comment: str
     confidence_score: Optional[float]
     tags: Optional[list[str]]
+    origin: Optional[str]            # introduced_by_pr | modified_by_pr | worsened_by_pr | pre_existing | contextual | unknown
+    change_scope: Optional[str]      # changed | unchanged | both
+    classification: Optional[str]    # finding | recommendation
+    affected_by_pr: Optional[bool]
+    evidence_source: Optional[str]
+    impact_type: Optional[str]       # none | maintainability | correctness | runtime_failure | data_integrity | concurrency | resource_exhaustion | security | performance | production_failure
+
 
 
 class PRContext(TypedDict, total=False):

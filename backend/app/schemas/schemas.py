@@ -116,6 +116,8 @@ class PendingPrItem(BaseModel):
     existing_review_id:     Optional[str] = None
     existing_review_status: Optional[str] = None
     approvers:              list[str] = []
+    changes_requested_by:   list[str] = []
+    comment_count:          int = 0
     current_user_approved:  bool = False
 
 
@@ -151,6 +153,10 @@ class FindingResponse(OrmBase):
     bitbucket_comment_id: Optional[str]
     confidence_score:     Optional[float]
     tags:                 Optional[list[str]]
+    origin:               Optional[str] = "introduced_by_pr"
+    change_scope:         Optional[str] = "changed"
+    classification:       Optional[str] = "finding"
+    affected_by_pr:       Optional[bool] = True
     created_at:           datetime
 
 

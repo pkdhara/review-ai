@@ -42,6 +42,10 @@ export interface Finding {
   approval_status: 'pending' | 'approved' | 'rejected';
   edited_comment?: string;
   published: boolean;
+  origin?: 'introduced_by_pr' | 'modified_by_pr' | 'worsened_by_pr' | 'pre_existing' | 'contextual' | 'unknown';
+  change_scope?: 'changed' | 'unchanged' | 'both';
+  classification?: 'finding' | 'recommendation';
+  affected_by_pr?: boolean;
   created_at: string;
 }
 
@@ -123,6 +127,9 @@ export interface PendingPrItem {
   existing_review_id?: string;
   existing_review_status?: string;
   approvers?: string[];
+  changes_requested_by?: string[];
+  comment_count?: number;
+  current_user_approved?: boolean;
 }
 
 export interface PendingPrsResponse {

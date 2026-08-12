@@ -68,7 +68,7 @@ class SecurityAgent(BaseAgent):
         logs.append(self._log(state, "Running security analysis"))
 
         pr_context = state.get("pr_context") or {}
-        diff = pr_context.get("diff", "")[:20000]
+        diff = pr_context.get("diff", "")
 
         if not diff:
             return {**state, "logs": logs, "findings": findings, "current_agent": self.name, "progress_percent": 66}
@@ -78,12 +78,17 @@ Changed files: {[self.get_file_path(f) for f in pr_context.get('changed_files', 
 
 Diff:
 {diff}
-{self._get_class_structures_prompt(state)}
-{self._get_changed_methods_prompt(state)}
 """
 
         try:
-            raw_findings = await self._invoke_llm_json(SYSTEM_PROMPT, user_prompt)
+            raw_findings = await self._invoke_llm_json(
+                SYSTEM_PROMPT,
+                user_prompt,
+                context_mode="diff_only",
+                repository_context=False,
+                diff_chars=len(diff),
+                context_chars=0,
+            )
             for f in raw_findings:
                 findings.append(self._make_finding(
                     severity=f.get("severity", "high"),

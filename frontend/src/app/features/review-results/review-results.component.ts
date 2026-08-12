@@ -8,12 +8,16 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
 import { ReviewSignalStore } from '../../core/store/review.store';
+import { ReviewApiService } from '../../core/services/review-api.service';
 import { Finding } from '../../core/models/models';
 
 const CATEGORY_TABS = [
   { key: null, label: 'All', icon: '🔍' },
+  { key: 'pr_defects', label: 'PR Defects', icon: '🚨' },
+  { key: 'recommendations', label: 'Recommendations', icon: '💡' },
   { key: 'requirement', label: 'Requirements', icon: '📋' },
   { key: 'code_quality', label: 'Code Quality', icon: '🏗️' },
   { key: 'sql_performance', label: 'SQL', icon: '⚡' },
@@ -64,12 +68,24 @@ const CATEGORY_TABS = [
               </div>
             }
           </div>
-          <a *ngIf="false" [routerLink]="['/reviews', reviewId, 'approval']" class="btn btn-primary">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-            Approve & Publish
-          </a>
+          <div class="header-actions" style="display: flex; gap: 10px; align-items: center;">
+            <button
+              class="btn btn-primary"
+              [disabled]="isRerunning() || !store.currentReview()"
+              (click)="rerunReview()"
+              id="rerun-review-btn"
+              title="Run a new AI review for this pull request"
+            >
+              <span *ngIf="isRerunning()" class="spin-icon spinning">⚡</span>
+              <span *ngIf="!isRerunning()" style="display: flex; align-items: center; gap: 6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M21.5 2v6h-6M2.5 22v-6h6"/>
+                  <path d="M2 11.5a10 10 0 0 1 18.8-4.3L21.5 8M22 12.5a10 10 0 0 1-18.8 4.3L2.5 16"/>
+                </svg>
+                Re-run Review
+              </span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -133,12 +149,17 @@ const CATEGORY_TABS = [
         }
       }
 
-      <!-- Category Tabs -->
+      <!-- Single Unified Filter Tab Bar -->
       <div class="tab-bar fade-in" style="margin-bottom:20px">
-        @for (tab of categoryTabs; track tab.key) {
+        @for (tab of categoryTabs; track tab.key; let idx = $index) {
+          @if (idx === 3) {
+            <div class="tab-divider"></div>
+          }
           <button
             class="tab-item"
             [class.active]="activeCategory() === tab.key"
+            [class.tab-pr-defects]="tab.key === 'pr_defects'"
+            [class.tab-recommendations]="tab.key === 'recommendations'"
             (click)="setCategory(tab.key)"
           >
             {{ tab.icon }} {{ tab.label }}
@@ -149,20 +170,25 @@ const CATEGORY_TABS = [
 
       <!-- Severity Filter + Search -->
       <div class="filter-row fade-in">
-        <input
-          class="input"
-          style="max-width:320px"
-          type="text"
-          [(ngModel)]="searchQuery"
-          placeholder="Search findings..."
-          id="findings-search"
-        />
+        <div class="search-box">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input
+            class="input search-input"
+            type="text"
+            [(ngModel)]="searchQuery"
+            placeholder="Search findings by keyword or file..."
+            id="findings-search"
+          />
+        </div>
         <div class="severity-filters">
           @for (sev of severities; track sev) {
             <button
               class="sev-btn"
               [class.active]="activeSeverity() === sev.key"
-              [class]="'sev-' + sev.key"
+              [class]="'sev-' + (sev.key || 'all')"
               (click)="setSeverity(sev.key)"
             >
               {{ sev.label }}
@@ -177,7 +203,7 @@ const CATEGORY_TABS = [
           <div class="card">
             <div class="card-body" style="text-align:center; padding:48px">
               <div style="font-size:2.5rem; margin-bottom:12px">🎉</div>
-              <h3>No findings</h3>
+              <h3>No items found</h3>
               <p class="text-secondary" style="margin-top:6px">No issues match the current filters.</p>
             </div>
           </div>
@@ -189,6 +215,18 @@ const CATEGORY_TABS = [
               <div class="finding-meta">
                 <span class="badge" [class]="'badge-' + finding.severity">{{ finding.severity }}</span>
                 <span class="category-chip">{{ getCategoryLabel(finding.category) }}</span>
+                @if (finding.origin) {
+                  <span class="origin-chip" [class]="'origin-' + finding.origin">
+                    <span class="chip-icon">{{ getOriginIcon(finding.origin) }}</span>
+                    <span>{{ formatOrigin(finding.origin) }}</span>
+                  </span>
+                }
+                @if (finding.change_scope) {
+                  <span class="scope-chip" [class]="'scope-' + finding.change_scope">
+                    <span class="chip-icon">{{ getScopeIcon(finding.change_scope) }}</span>
+                    <span>{{ formatScope(finding.change_scope) }}</span>
+                  </span>
+                }
                 @if (finding.file_path) {
                   <span class="file-chip">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -233,6 +271,9 @@ const CATEGORY_TABS = [
       &:hover { color: var(--color-text-primary); }
     }
     .header-row { display: flex; justify-content: space-between; align-items: flex-start; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinning { display: inline-block; animation: spin 0.8s linear infinite; }
 
     .pr-title-text { color: var(--color-text-secondary); font-size: 0.95rem; font-weight: 500; }
 
@@ -336,18 +377,97 @@ const CATEGORY_TABS = [
     .summary-text-card { margin-bottom: 20px; }
     .summary-text { font-size: 0.9rem; line-height: 1.7; white-space: pre-line; }
 
-    .filter-row { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .class-tab-bar {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px; background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--color-border); border-radius: 12px;
+      backdrop-filter: blur(16px); margin-bottom: 20px;
+    }
 
-    .severity-filters { display: flex; gap: 6px; }
+    .btn-class-tab {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 16px; border-radius: 8px; font-size: 0.82rem; font-weight: 600;
+      color: var(--color-text-muted); background: transparent; border: 1px solid transparent;
+      cursor: pointer; transition: all var(--transition-fast);
+
+      &:hover { color: var(--color-text-primary); background: rgba(255, 255, 255, 0.04); }
+
+      &.active {
+        background: var(--color-surface-3); color: #ffffff;
+        border-color: rgba(255, 255, 255, 0.12); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      }
+
+      &.pr-defect-btn.active {
+        background: rgba(239, 68, 68, 0.15); color: #fca5a5;
+        border-color: rgba(239, 68, 68, 0.35);
+      }
+
+      &.rec-btn.active {
+        background: rgba(99, 102, 241, 0.15); color: #c7d2fe;
+        border-color: rgba(99, 102, 241, 0.35);
+      }
+    }
+
+    .tab-count-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 1px 7px; border-radius: 100px; font-size: 0.7rem; font-weight: 700;
+      background: rgba(255, 255, 255, 0.1); color: var(--color-text-muted);
+
+      &.defect-badge { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+      &.rec-badge { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+    }
+
+    .filter-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+
+    .search-box {
+      position: relative;
+      flex: 1;
+      min-width: 260px;
+      max-width: 420px;
+
+      .search-icon {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--color-text-muted);
+        pointer-events: none;
+      }
+
+      .search-input {
+        padding-left: 38px;
+        height: 38px;
+        font-size: 0.85rem;
+        background: rgba(15, 20, 32, 0.75);
+        border-color: var(--color-border);
+        border-radius: var(--radius-md);
+      }
+    }
+
+    .severity-filters { display: flex; gap: 6px; align-items: center; }
     .sev-btn {
-      padding: 6px 14px; border-radius: 100px; font-size: 0.75rem; font-weight: 700;
-      cursor: pointer; border: 1px solid; background: transparent; text-transform: uppercase;
-      letter-spacing: 0.05em; transition: all var(--transition-fast);
-      &.sev-all { color: var(--color-text-muted); border-color: var(--color-border); &.active, &:hover { background: rgba(255,255,255,0.08); color: white; } }
-      &.sev-critical { color: #fca5a5; border-color: rgba(239,68,68,0.3); &.active { background: rgba(239,68,68,0.15); } }
-      &.sev-high { color: #fdba74; border-color: rgba(249,115,22,0.3); &.active { background: rgba(249,115,22,0.15); } }
-      &.sev-medium { color: #fde047; border-color: rgba(234,179,8,0.3); &.active { background: rgba(234,179,8,0.15); } }
-      &.sev-low { color: #86efac; border-color: rgba(34,197,94,0.3); &.active { background: rgba(34,197,94,0.15); } }
+      height: 34px;
+      padding: 0 14px;
+      border-radius: 100px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      border: 1px solid;
+      background: transparent;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: all var(--transition-fast);
+      white-space: nowrap;
+
+      &.sev-all {
+        color: var(--color-text-secondary);
+        border-color: var(--color-border);
+        &.active, &:hover { background: rgba(255,255,255,0.08); color: white; border-color: rgba(255,255,255,0.2); }
+      }
+      &.sev-critical { color: #fca5a5; border-color: rgba(239,68,68,0.3); &.active, &:hover { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.5); } }
+      &.sev-high { color: #fdba74; border-color: rgba(249,115,22,0.3); &.active, &:hover { background: rgba(249,115,22,0.18); border-color: rgba(249,115,22,0.5); } }
+      &.sev-medium { color: #fde047; border-color: rgba(234,179,8,0.3); &.active, &:hover { background: rgba(234,179,8,0.18); border-color: rgba(234,179,8,0.5); } }
+      &.sev-low { color: #86efac; border-color: rgba(34,197,94,0.3); &.active, &:hover { background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.5); } }
     }
 
     .findings-container { display: flex; flex-direction: column; gap: 16px; }
@@ -370,6 +490,27 @@ const CATEGORY_TABS = [
     .category-chip {
       background: rgba(99,102,241,0.10); color: var(--color-primary-light);
       padding: 2px 10px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+    }
+
+    .origin-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 6px; font-size: 0.7rem; font-weight: 700;
+      letter-spacing: 0.02em; border: 1px solid;
+      
+      &.origin-introduced_by_pr { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); }
+      &.origin-modified_by_pr { background: rgba(245, 158, 11, 0.15); color: #fde047; border-color: rgba(245, 158, 11, 0.35); }
+      &.origin-worsened_by_pr { background: rgba(225, 29, 72, 0.15); color: #fda4af; border-color: rgba(225, 29, 72, 0.35); }
+      &.origin-pre_existing { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; border-color: rgba(148, 163, 184, 0.3); }
+      &.origin-contextual { background: rgba(99, 102, 241, 0.14); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.3); }
+    }
+
+    .scope-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 6px; font-size: 0.7rem; font-weight: 600;
+      font-family: 'JetBrains Mono', monospace; border: 1px solid;
+      
+      &.scope-changed { background: rgba(6, 182, 212, 0.14); color: #67e8f9; border-color: rgba(6, 182, 212, 0.35); }
+      &.scope-unchanged { background: rgba(100, 116, 139, 0.16); color: #94a3b8; border-color: rgba(100, 116, 139, 0.3); }
     }
 
     .file-chip {
@@ -409,9 +550,13 @@ const CATEGORY_TABS = [
 export class ReviewResultsComponent implements OnInit {
   readonly store = inject(ReviewSignalStore);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly api = inject(ReviewApiService);
 
+  isRerunning = signal<boolean>(false);
   reviewId = '';
   categoryTabs = CATEGORY_TABS;
+  activeClassification = signal<'all' | 'finding' | 'recommendation'>('all');
   activeCategory = signal<string | null>(null);
   activeSeverity = signal<string | null>(null);
   searchQuery = '';
@@ -424,9 +569,36 @@ export class ReviewResultsComponent implements OnInit {
     { key: 'low', label: 'Low' },
   ];
 
+  prDefectsCount = computed(() => {
+    return this.store.findings().filter((f) =>
+      f.classification === 'finding' ||
+      ['introduced_by_pr', 'modified_by_pr', 'worsened_by_pr'].includes(f.origin || '') ||
+      f.affected_by_pr === true
+    ).length;
+  });
+
+  recommendationsCount = computed(() => {
+    return this.store.findings().length - this.prDefectsCount();
+  });
+
   displayedFindings = computed(() => {
     let items = this.store.findings();
-    if (this.activeCategory()) items = items.filter((f) => f.category === this.activeCategory());
+    const cat = this.activeCategory();
+    if (cat === 'pr_defects') {
+      items = items.filter((f) =>
+        f.classification === 'finding' ||
+        ['introduced_by_pr', 'modified_by_pr', 'worsened_by_pr'].includes(f.origin || '') ||
+        f.affected_by_pr === true
+      );
+    } else if (cat === 'recommendations') {
+      items = items.filter((f) =>
+        f.classification === 'recommendation' ||
+        ['pre_existing', 'contextual', 'unknown'].includes(f.origin || '') ||
+        f.affected_by_pr === false
+      );
+    } else if (cat) {
+      items = items.filter((f) => f.category === cat);
+    }
     if (this.activeSeverity()) items = items.filter((f) => f.severity === this.activeSeverity());
     if (this.searchQuery) {
       const q = this.searchQuery.toLowerCase();
@@ -437,7 +609,30 @@ export class ReviewResultsComponent implements OnInit {
           f.file_path?.toLowerCase().includes(q)
       );
     }
-    return items;
+    // Sort sequence by Severity first (Critical -> High -> Medium -> Low), then file_path and line_number
+    const SEVERITY_WEIGHTS: Record<string, number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+      info: 0,
+    };
+
+    return [...items].sort((a, b) => {
+      const weightA = SEVERITY_WEIGHTS[a.severity?.toLowerCase() || ''] ?? 0;
+      const weightB = SEVERITY_WEIGHTS[b.severity?.toLowerCase() || ''] ?? 0;
+      if (weightA !== weightB) {
+        return weightB - weightA;
+      }
+      const fileA = (a.file_path || '').toLowerCase();
+      const fileB = (b.file_path || '').toLowerCase();
+      if (fileA !== fileB) {
+        if (!fileA) return 1;
+        if (!fileB) return -1;
+        return fileA.localeCompare(fileB);
+      }
+      return (a.line_number ?? 0) - (b.line_number ?? 0);
+    });
   });
 
   ngOnInit() {
@@ -447,11 +642,39 @@ export class ReviewResultsComponent implements OnInit {
     this.store.loadSummary(this.reviewId);
   }
 
+  async rerunReview(): Promise<void> {
+    const r = this.store.currentReview();
+    if (!r) return;
+
+    this.isRerunning.set(true);
+    try {
+      const workspace = r.workspace || r.bitbucket_workspace || 'freshconcepts';
+      const repoSlug = r.repo_slug || r.bitbucket_repo_slug || 'fc-angular';
+
+      const newReview = await firstValueFrom(
+        this.api.startReview({
+          pr_url: r.pr_url,
+          bitbucket_workspace: workspace,
+          bitbucket_repo_slug: repoSlug,
+          pr_number: r.pr_number,
+          jira_key_override: r.jira_key,
+        })
+      );
+      this.router.navigate(['/reviews', newReview.id, 'progress']);
+    } catch (err: any) {
+      alert(`Failed to rerun review: ${err.message || 'Unknown error'}`);
+    } finally {
+      this.isRerunning.set(false);
+    }
+  }
+
   setCategory(cat: string | null) { this.activeCategory.set(cat); }
   setSeverity(sev: string | null) { this.activeSeverity.set(sev); }
 
   getTabCount(key: string | null): number {
     if (!key) return this.store.findings().length;
+    if (key === 'pr_defects') return this.prDefectsCount();
+    if (key === 'recommendations') return this.recommendationsCount();
     return this.store.findings().filter((f) => f.category === key).length;
   }
 
@@ -484,4 +707,43 @@ export class ReviewResultsComponent implements OnInit {
   formatRecommendation(rec?: string): string {
     return (rec || 'NEEDS_DISCUSSION').replace(/_/g, ' ');
   }
+
+  formatOrigin(orig?: string): string {
+    switch (orig) {
+      case 'introduced_by_pr': return 'PR Introduced';
+      case 'modified_by_pr': return 'PR Modified';
+      case 'worsened_by_pr': return 'PR Worsened';
+      case 'pre_existing': return 'Pre-existing';
+      case 'contextual': return 'Contextual';
+      default: return 'Advisory';
+    }
+  }
+
+  getOriginIcon(orig?: string): string {
+    switch (orig) {
+      case 'introduced_by_pr': return '🚨';
+      case 'modified_by_pr': return '✏️';
+      case 'worsened_by_pr': return '⚠️';
+      case 'pre_existing': return '🕒';
+      case 'contextual': return '🔍';
+      default: return '💡';
+    }
+  }
+
+  getScopeIcon(scope?: string): string {
+    switch (scope) {
+      case 'changed': return '⚡';
+      case 'unchanged': return '📄';
+      default: return '🔹';
+    }
+  }
+
+  formatScope(scope?: string): string {
+    switch (scope) {
+      case 'changed': return 'Changed Line';
+      case 'unchanged': return 'Unchanged Line';
+      default: return scope || '';
+    }
+  }
 }
+

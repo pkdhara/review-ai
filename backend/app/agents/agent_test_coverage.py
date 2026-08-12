@@ -12,6 +12,10 @@ SYSTEM_PROMPT = """
 You are a Senior QA Engineer and Test Automation expert.
 Analyze the provided code changes and identify test coverage gaps.
 
+IMPORTANT CLASSIFICATION RULE:
+Test coverage recommendations (missing unit tests, integration tests, edge case tests) are engineering recommendations (`classification: 'recommendation'`).
+They should NOT be treated as PR defects unless the absence of a test directly causes a demonstrable runtime defect or regression.
+
 DO NOT check or report missing test coverage for TypeScript (.ts), Angular, HTML, or CSS files. Ignore all frontend TypeScript file changes.
 
 Review backend/Java code changes:
@@ -54,7 +58,7 @@ class TestCoverageAgent(BaseAgent):
         logs.append(self._log(state, "Analyzing test coverage"))
 
         pr_context = state.get("pr_context") or {}
-        diff = pr_context.get("diff", "")[:20000]
+        diff = pr_context.get("diff", "")
         changed_files = [self.get_file_path(f) for f in pr_context.get("changed_files", [])]
 
         if not diff:
@@ -76,14 +80,19 @@ Changed files (excluding TypeScript/frontend files):
 
 Diff:
 {diff}
-{self._get_class_structures_prompt(state)}
-{self._get_changed_methods_prompt(state)}
 
 Note: Ignore all TypeScript (.ts, .tsx, .spec.ts) files and frontend component changes. Only report test coverage issues for backend/Java changes.
 """
 
         try:
-            raw_findings = await self._invoke_llm_json(SYSTEM_PROMPT, user_prompt)
+            raw_findings = await self._invoke_llm_json(
+                SYSTEM_PROMPT,
+                user_prompt,
+                context_mode="diff_only",
+                repository_context=False,
+                diff_chars=len(diff),
+                context_chars=0,
+            )
             for f in raw_findings:
                 fp = f.get("file_path", "") or ""
                 # Skip any findings targeting TypeScript files
@@ -102,6 +111,9 @@ Note: Ignore all TypeScript (.ts, .tsx, .spec.ts) files and frontend component c
                     file_path=f.get("file_path"),
                     line_number=f.get("line_number"),
                     evidence=f.get("evidence"),
+                    classification="recommendation",
+                    origin="pre_existing",
+                    affected_by_pr=False,
                 ))
             logs.append(self._log(state, f"Found {len(raw_findings)} test coverage gaps"))
         except Exception as exc:

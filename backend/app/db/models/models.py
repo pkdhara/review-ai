@@ -293,6 +293,10 @@ class ReviewFinding(UUIDMixin, AuditMixin, Base):
     bitbucket_comment_id: Mapped[Optional[str]]  = mapped_column(String(100))
     confidence_score: Mapped[Optional[float]]     = mapped_column(Numeric(3, 2))
     tags:           Mapped[Optional[list]]        = mapped_column(ARRAY(Text))
+    origin:         Mapped[Optional[str]]         = mapped_column(String(50))
+    change_scope:   Mapped[Optional[str]]         = mapped_column(String(20))
+    classification: Mapped[Optional[str]]         = mapped_column(String(30))
+    affected_by_pr: Mapped[Optional[bool]]        = mapped_column(Boolean)
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 

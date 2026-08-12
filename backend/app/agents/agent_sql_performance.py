@@ -80,7 +80,10 @@ Your job is to perform DEEPER analysis on the code diff — catch issues the sta
 - Reference specific file paths and line numbers visible in the diff
 - Provide `index_suggestion` as valid SQL DDL when suggesting indexes
 - Do NOT repeat findings already covered in static_issues list
-- severity: critical (blocking, causes production incidents) | high | medium | low | info
+- SEVERITY CALIBRATION:
+  * Potential or low-impact optimizations ("Possible N+1 pattern; verify query count under load") -> LOW or MEDIUM severity recommendations.
+  * Clear, PR-introduced massive performance defects (e.g., executing DB query in a loop for every invoice/record) -> HIGH.
+  * Pre-existing N+1 issues on unchanged code -> recommendation / pre-existing (0 PR risk).
 
 ## Output Format
 Return ONLY valid JSON:
@@ -150,7 +153,14 @@ class SqlPerformanceAgent(BaseAgent):
         llm_issues: list[SqlPerformanceIssue] = []
         try:
             user_prompt = self._build_prompt(diff, files, static_result, state)
-            raw_json    = await self._invoke_llm_json(SYSTEM_PROMPT, user_prompt)
+            raw_json    = await self._invoke_llm_json(
+                SYSTEM_PROMPT,
+                user_prompt,
+                context_mode="diff_only",
+                repository_context=False,
+                diff_chars=len(diff),
+                context_chars=0,
+            )
             llm_issues  = self._parse_llm_output(raw_json, len(static_result.issues))
             logs.append(self._make_log(f"GPT-5 found {len(llm_issues)} additional issue(s)."))
         except Exception as exc:
@@ -229,10 +239,8 @@ class SqlPerformanceAgent(BaseAgent):
 
 ## Code Diff (analyse for additional SQL/ORM performance issues):
 ```diff
-{diff[:14000]}
+{diff}
 ```
-{self._get_class_structures_prompt(state)}
-{self._get_changed_methods_prompt(state)}
 
 Find SQL performance issues NOT already listed in the static analysis above.
 Return JSON only."""

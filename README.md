@@ -52,6 +52,17 @@ Before setting up ReviewAI, ensure your host server meets the following requirem
   - **Option A (Antigravity Bridge - Recommended for zero cost)**: Antigravity IDE / Language Server running on the host machine logged into your Google account.
   - **Option B (Cloud API)**: OpenAI API key (`gpt-4o`), Gemini API key (`gemini-3.6-flash`), or Anthropic API key (`claude-3-5-sonnet`).
 
+### 🔐 Local Git Repository Permissions
+Because the `reviewai_backend` container runs as a non-root user (`UID 999`), local repositories mounted into the container must have read/execute access permissions on their `.git` metadata directories:
+
+```bash
+# Grant read/execute access to local repositories for local worktree indexing
+chmod -R o+rX /home/pradeep/fc/
+# OR for any local repository base directory:
+chmod -R g+rX,o+rX /path/to/local/git/repos/.git
+```
+*Note: Without these read permissions, Git inside the container will report `fatal: not a git repository` and fallback to diff-only context without deep local symbol indexing.*
+
 ---
 
 ## 🛠️ How to Run on Different Servers / Environments

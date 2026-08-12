@@ -188,9 +188,22 @@ import { PendingPrStore } from '../../core/store/pending-pr.store';
               <span 
                 *ngIf="item.approvers && item.approvers.length > 0" 
                 class="approvals-chip"
-                [title]="'Approved by: ' + item.approvers.join(', ')"
               >
                 ✅ {{ item.approvers.length }} {{ item.approvers.length === 1 ? 'Approval' : 'Approvals' }}
+              </span>
+
+              <span 
+                *ngIf="item.changes_requested_by && item.changes_requested_by.length > 0" 
+                class="changes-chip"
+              >
+                ⚠️ {{ item.changes_requested_by.length }} {{ item.changes_requested_by.length === 1 ? 'Change Requested' : 'Changes Requested' }}
+              </span>
+
+              <span 
+                *ngIf="item.comment_count && item.comment_count > 0" 
+                class="comments-chip"
+              >
+                💬 {{ item.comment_count }} {{ item.comment_count === 1 ? 'Comment' : 'Comments' }}
               </span>
             </div>
 
@@ -628,7 +641,28 @@ import { PendingPrStore } from '../../core/store/pending-pr.store';
       border-radius: 10px;
       border: 1px solid rgba(16, 185, 129, 0.25);
       white-space: nowrap;
-      cursor: help;
+    }
+
+    .changes-chip {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #f87171;
+      background: rgba(239, 68, 68, 0.12);
+      padding: 3px 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      white-space: nowrap;
+    }
+
+    .comments-chip {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #c084fc;
+      background: rgba(168, 85, 247, 0.12);
+      padding: 3px 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      white-space: nowrap;
     }
 
     .branch-flow {

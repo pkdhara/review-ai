@@ -54,7 +54,7 @@ class BaseAgent:
     def _clean_and_parse_json(text: str) -> Any:
         text = (text or "").strip()
         if not text:
-            raise json.JSONDecodeError("Empty response content", text, 0)
+            return []
 
         # 1. Try direct parse first with strict=False to handle raw newlines in string fields
         try:
@@ -94,11 +94,30 @@ class BaseAgent:
         system_prompt: str,
         user_prompt: str,
         retries: int = 2,
+        context_mode: str = "",
+        repository_context: Optional[bool] = None,
+        diff_chars: int = 0,
+        context_chars: int = 0,
+        **kwargs: Any,
     ) -> Any:
         """Invoke LLM and parse JSON from the response. Retries on failure."""
         import time
         from app.agents.llm_provider import LLMResponse
         
+        # Determine context mode and repository_context defaults based on agent
+        if not context_mode:
+            if self.name == "req_validation":
+                context_mode = "full_repository"
+            elif self.name == "review_summary":
+                context_mode = "findings_only"
+            elif self.name == "req_extraction":
+                context_mode = "jira_only"
+            else:
+                context_mode = "diff_only"
+
+        if repository_context is None:
+            repository_context = (context_mode == "full_repository")
+
         provider = self._get_llm_provider()
         
         last_error: Exception | None = None
@@ -136,6 +155,10 @@ class BaseAgent:
                     usage_available=response.usage_available,
                     estimated_cost=response.estimated_cost,
                     code_context_usage=ctx_usage,
+                    context_mode=context_mode,
+                    repository_context=repository_context,
+                    diff_chars=diff_chars,
+                    context_chars=context_chars,
                 )
                 return result
             except json.JSONDecodeError as e:
@@ -190,6 +213,12 @@ class BaseAgent:
         evidence: Optional[str] = None,
         confidence_score: Optional[float] = None,
         tags: Optional[list[str]] = None,
+        origin: Optional[str] = None,
+        change_scope: Optional[str] = None,
+        classification: Optional[str] = None,
+        affected_by_pr: Optional[bool] = None,
+        evidence_source: Optional[str] = None,
+        impact_type: Optional[str] = None,
     ) -> FindingDict:
         return FindingDict(
             review_id=self._review_id,
@@ -206,6 +235,12 @@ class BaseAgent:
             review_comment=review_comment,
             confidence_score=confidence_score,
             tags=tags or [],
+            origin=origin,
+            change_scope=change_scope,
+            classification=classification,
+            affected_by_pr=affected_by_pr,
+            evidence_source=evidence_source,
+            impact_type=impact_type,
         )
 
     def _findings_from_llm(self, raw: list[dict]) -> list[FindingDict]:
@@ -229,6 +264,12 @@ class BaseAgent:
                 evidence=item.get("evidence"),
                 confidence_score=item.get("confidence_score"),
                 tags=item.get("tags", []),
+                origin=item.get("origin"),
+                change_scope=item.get("change_scope"),
+                classification=item.get("classification"),
+                affected_by_pr=item.get("affected_by_pr"),
+                evidence_source=item.get("evidence_source"),
+                impact_type=item.get("impact_type") or item.get("defect_impact"),
             ))
         return findings
 

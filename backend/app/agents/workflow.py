@@ -457,20 +457,18 @@ class ReviewWorkflow:
 
         parallel_dur = time.monotonic() - stage_t0
 
-        # ── Merge findings (union) ─────────────────────────────────────────────
-        merged_findings: list = list(state.get("findings") or [])
+        # ── Merge findings (union + deduplication) ─────────────────────────────
+        raw_merged_findings: list = list(state.get("findings") or [])
         merged_logs: list = list(state.get("logs") or [])
         merged_errors: dict = dict(state.get("agent_errors") or {})
         merged_requirements: list = list(state.get("requirements") or [])
+        merged_explicit_reqs: list = list(state.get("explicit_requirements") or [])
+        merged_inferred_reqs: list = list(state.get("inferred_requirements") or [])
         merged_extracted: dict = dict(state.get("extracted_requirements") or {})
 
-        seen_finding_ids: set = set()
         for r in results:
             for f in (r.get("findings") or []):
-                fid = (f.get("title", ""), f.get("file_path", ""), f.get("agent_name", ""))
-                if fid not in seen_finding_ids:
-                    seen_finding_ids.add(fid)
-                    merged_findings.append(f)
+                raw_merged_findings.append(f)
 
             for entry in (r.get("logs") or []):
                 if entry not in merged_logs:
@@ -481,8 +479,18 @@ class ReviewWorkflow:
             # Capture requirement_extraction output specifically
             if r.get("requirements"):
                 merged_requirements = r["requirements"]
+            if r.get("explicit_requirements"):
+                merged_explicit_reqs = r["explicit_requirements"]
+            if r.get("inferred_requirements"):
+                merged_inferred_reqs = r["inferred_requirements"]
             if r.get("extracted_requirements"):
                 merged_extracted = r["extracted_requirements"]
+
+        from app.agents.git_diff_verifier import verify_all_findings
+        from app.agents.deduplication import deduplicate_findings
+        diff_str = (state.get("pr_context") or {}).get("diff", "")
+        verified_raw = verify_all_findings(raw_merged_findings, diff_str, state.get("pr_context"))
+        merged_findings = deduplicate_findings(verified_raw)
 
         # Timing summary log
         timing_lines = " | ".join(
@@ -491,7 +499,7 @@ class ReviewWorkflow:
         )
         merged_logs.append(_log_entry(
             "orchestrator",
-            f"Parallel analysis complete in {parallel_dur:.2f}s (wall-clock). Agents: {timing_lines}",
+            f"Parallel analysis complete in {parallel_dur:.2f}s (wall-clock). Deduplicated {len(raw_merged_findings)} findings -> {len(merged_findings)}. Agents: {timing_lines}",
         ))
 
         self._audit.log_workflow_event("parallel_analysis_completed", data={
@@ -506,6 +514,8 @@ class ReviewWorkflow:
             "logs": merged_logs,
             "agent_errors": merged_errors,
             "requirements": merged_requirements,
+            "explicit_requirements": merged_explicit_reqs,
+            "inferred_requirements": merged_inferred_reqs,
             "extracted_requirements": merged_extracted,
             "current_agent": "security",
             "progress_percent": 75,
@@ -529,6 +539,15 @@ class ReviewWorkflow:
         for agent_class, agent_name, pct in _SEQUENTIAL_AGENTS:
             t0 = time.monotonic()
             try:
+                # Run Git diff verification & deduplication right before review_summary
+                if agent_name == "review_summary":
+                    from app.agents.git_diff_verifier import verify_all_findings
+                    from app.agents.deduplication import deduplicate_findings
+                    current_findings = current_state.get("findings") or []
+                    diff_str = (current_state.get("pr_context") or {}).get("diff", "")
+                    verified = verify_all_findings(current_findings, diff_str, current_state.get("pr_context"))
+                    current_state["findings"] = deduplicate_findings(verified)
+
                 agent = agent_class(agents_config)
                 agent_res = await agent.run(current_state)
                 # Merge output safely to prevent partial dict returns from clearing existing state
@@ -559,6 +578,22 @@ class ReviewWorkflow:
                     "progress_percent": pct,
                 }
                 await self._emit(current_state)
+
+        # Final verification, deduplication, and risk score calculation
+        from app.agents.git_diff_verifier import verify_all_findings
+        from app.agents.deduplication import deduplicate_findings
+        from app.agents.risk_calculator import calculate_pr_risk_score
+
+        final_findings = deduplicate_findings(
+            verify_all_findings(
+                current_state.get("findings") or [],
+                (current_state.get("pr_context") or {}).get("diff", ""),
+                current_state.get("pr_context"),
+            )
+        )
+        current_state["findings"] = final_findings
+        if "summary" in current_state and isinstance(current_state["summary"], dict):
+            current_state["summary"]["risk_score"] = calculate_pr_risk_score(final_findings)
 
         return current_state
 

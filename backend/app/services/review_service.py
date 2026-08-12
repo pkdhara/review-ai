@@ -569,101 +569,195 @@ class ReviewService:
 
         items: list[PendingPrItem] = []
         current_user_uuid = None
+        current_user_account_id = None
+        current_user_nickname = None
         try:
             user_data = await bb._get("/user")
             current_user_uuid = user_data.get("uuid")
+            current_user_account_id = user_data.get("account_id")
+            current_user_nickname = user_data.get("nickname")
         except Exception as e:
             log.warning("bitbucket.fetch_user_failed", error=str(e))
 
+        def _is_user_match(author_dict: dict) -> bool:
+            if not author_dict:
+                return False
+            a_uuid = (author_dict.get("uuid") or (author_dict.get("user") or {}).get("uuid") or "").strip("{}").lower()
+            if current_user_uuid and a_uuid and a_uuid == current_user_uuid.strip("{}").lower():
+                return True
+            a_acc = author_dict.get("account_id") or (author_dict.get("user") or {}).get("account_id")
+            if current_user_account_id and a_acc and a_acc == current_user_account_id:
+                return True
+            a_nick = (author_dict.get("nickname") or (author_dict.get("user") or {}).get("nickname") or "").lower()
+            if current_user_nickname and a_nick and a_nick == current_user_nickname.lower():
+                return True
+            return False
+
+        target_repos = ["fc-angular", "freshconcepts", "freshconcepts-integration", "fc-mobile-app", "fc-mobile-backend"]
         try:
-            prs_data = await bb._get(f"/repositories/{workspace}/fc-angular/pullrequests", params={"state": "OPEN"})
-            prs = prs_data.get("values", [])
+            repos_resp = await bb._get(f"/repositories/{workspace}")
+            if repos_resp and "values" in repos_resp:
+                fetched = [r.get("slug") for r in repos_resp.get("values", []) if r.get("slug")]
+                if fetched:
+                    target_repos = fetched
+        except Exception as e:
+            log.warning("bitbucket.fetch_workspace_repos_failed", error=str(e))
 
-            db_reviews, _ = await self.reviews.list_reviews(page=1, page_size=100)
-            existing_by_pr = {}
-            for r in db_reviews:
-                if r.pr_number and r.pr_number not in existing_by_pr:
-                    existing_by_pr[r.pr_number] = r
+        async def _fetch_repo_prs(slug: str):
+            try:
+                prs_resp = await bb._get(f"/repositories/{workspace}/{slug}/pullrequests", params={"state": "OPEN"})
+                return slug, prs_resp.get("values", [])
+            except Exception as exc:
+                log.warning("bitbucket.fetch_repo_prs_failed", repo=slug, error=str(exc))
+                return slug, []
 
+        repo_prs_list = await asyncio.gather(*(_fetch_repo_prs(slug) for slug in target_repos))
+
+        db_reviews, _ = await self.reviews.list_reviews(page=1, page_size=200)
+        existing_by_pr = {}
+        for r in db_reviews:
+            if r.pr_number:
+                ws, r_slug = self._extract_repo(r)
+                if r_slug:
+                    existing_by_pr[(r_slug, r.pr_number)] = r
+                existing_by_pr[r.pr_number] = r
+
+        raw_candidates = []
+        for repo_slug, prs in repo_prs_list:
             for pr in prs:
-                pr_num = pr.get("id")
-                title = pr.get("title", "")
-                source_branch = pr.get("source", {}).get("branch", {}).get("name", "")
-                target_branch = pr.get("destination", {}).get("branch", {}).get("name", "")
-                pr_url = pr.get("links", {}).get("html", {}).get("href", "")
+                raw_candidates.append((repo_slug, pr))
 
-                author_data = pr.get("author", {})
-                author_name = (
-                    author_data.get("display_name")
-                    or author_data.get("nickname")
-                    or (author_data.get("user") or {}).get("display_name")
+        async def _fetch_pr_detail(repo_slug: str, pr: dict):
+            pr_id = pr.get("id")
+            try:
+                d = await bb._get(f"/repositories/{workspace}/{repo_slug}/pullrequests/{pr_id}")
+                return repo_slug, pr, d
+            except Exception as e:
+                log.warning("bitbucket.fetch_pr_detail_failed", repo=repo_slug, pr_id=pr_id, error=str(e))
+                return repo_slug, pr, pr
+
+        detailed_candidates = await asyncio.gather(*(_fetch_pr_detail(r, p) for r, p in raw_candidates))
+
+        # Extract candidate PRs across all workspace repos
+        candidate_prs = []
+        jira_keys_to_fetch = set()
+
+        for repo_slug, pr_summary, pr in detailed_candidates:
+            pr_num = pr.get("id") or pr_summary.get("id")
+            title = pr.get("title") or pr_summary.get("title", "")
+            source_branch = (pr.get("source") or pr_summary.get("source", {})).get("branch", {}).get("name", "")
+            target_branch = (pr.get("destination") or pr_summary.get("destination", {})).get("branch", {}).get("name", "")
+            pr_url = (pr.get("links") or pr_summary.get("links", {})).get("html", {}).get("href", "")
+
+            author_data = pr.get("author") or pr_summary.get("author", {})
+            author_name = (
+                author_data.get("display_name")
+                or author_data.get("nickname")
+                or (author_data.get("user") or {}).get("display_name")
+            )
+
+            participants = pr.get("participants", []) or pr_summary.get("participants", [])
+            approvers = []
+            changes_requested_by = []
+            current_user_approved = False
+            for p in participants:
+                u = p.get("user", {})
+                d_name = u.get("display_name") or u.get("nickname") or "Unknown"
+                if p.get("approved"):
+                    approvers.append(d_name)
+                    if _is_user_match(u):
+                        current_user_approved = True
+                if p.get("state") == "CHANGES_REQUESTED":
+                    changes_requested_by.append(d_name)
+
+            comment_count = pr.get("comment_count", 0)
+
+            if author_only:
+                if not _is_user_match(author_data):
+                    continue
+            else:
+                if _is_user_match(author_data) or current_user_approved:
+                    continue
+
+            jira_key = (
+                BitbucketService.extract_jira_key(source_branch)
+                or BitbucketService.extract_jira_key(title)
+            )
+            if jira_key:
+                jira_keys_to_fetch.add(jira_key)
+
+            candidate_prs.append({
+                "repo_slug": repo_slug,
+                "pr_num": pr_num,
+                "title": title,
+                "source_branch": source_branch,
+                "target_branch": target_branch,
+                "pr_url": pr_url,
+                "author_name": author_name,
+                "approvers": approvers,
+                "changes_requested_by": changes_requested_by,
+                "comment_count": comment_count,
+                "current_user_approved": current_user_approved,
+                "jira_key": jira_key,
+                "created_on": pr.get("created_on"),
+                "updated_on": pr.get("updated_on"),
+            })
+
+        # Fetch Jira statuses in parallel
+        jira_statuses: dict[str, str] = {}
+        if jira_service and jira_keys_to_fetch:
+            async def _fetch_status(key: str):
+                try:
+                    issue = await jira_service.get_issue(key)
+                    st = (issue.get("fields") or {}).get("status", {}).get("name")
+                    return key, st
+                except Exception as e:
+                    log.debug("jira.fetch_status_failed", key=key, error=str(e))
+                    return key, None
+
+            status_results = await asyncio.gather(*(_fetch_status(k) for k in jira_keys_to_fetch))
+            jira_statuses = {k: st for k, st in status_results if st}
+
+        for c in candidate_prs:
+            pr_num = c["pr_num"]
+            repo_slug = c["repo_slug"]
+            jira_key = c["jira_key"]
+            jira_status = jira_statuses.get(jira_key) if jira_key else None
+
+            # Filter by Internal Review status if requested
+            if only_internal_review:
+                if not jira_status:
+                    continue
+                normalized_status = jira_status.lower().strip()
+                if "internal review" not in normalized_status and "in review" not in normalized_status:
+                    continue
+
+            jira_url = f"{base_jira_url.rstrip('/')}/browse/{jira_key}" if jira_key else None
+            existing = existing_by_pr.get((repo_slug, pr_num)) or existing_by_pr.get(pr_num)
+
+            items.append(
+                PendingPrItem(
+                    pr_number=pr_num,
+                    pr_title=c["title"],
+                    pr_url=c["pr_url"],
+                    pr_author=c["author_name"],
+                    source_branch=c["source_branch"],
+                    target_branch=c["target_branch"],
+                    jira_key=jira_key,
+                    jira_url=jira_url,
+                    jira_status=jira_status,
+                    workspace=workspace,
+                    repo_slug=repo_slug,
+                    created_on=c["created_on"],
+                    updated_on=c["updated_on"],
+                    existing_review_id=str(existing.id) if existing else None,
+                    existing_review_status=existing.status.value if existing else None,
+                    approvers=c["approvers"],
+                    changes_requested_by=c["changes_requested_by"],
+                    comment_count=c["comment_count"],
+                    current_user_approved=c["current_user_approved"],
                 )
-
-                participants = pr.get("participants", [])
-                approvers = []
-                current_user_approved = False
-                for p in participants:
-                    if p.get("approved"):
-                        u = p.get("user", {})
-                        d_name = u.get("display_name") or u.get("nickname") or "Unknown"
-                        approvers.append(d_name)
-                        if current_user_uuid and u.get("uuid") == current_user_uuid:
-                            current_user_approved = True
-
-                if author_only:
-                    author_uuid = author_data.get("uuid")
-                    if current_user_uuid and author_uuid != current_user_uuid:
-                        continue
-                else:
-                    if current_user_approved:
-                        continue
-
-                jira_key = (
-                    BitbucketService.extract_jira_key(source_branch)
-                    or BitbucketService.extract_jira_key(title)
-                )
-                jira_url = f"{base_jira_url.rstrip('/')}/browse/{jira_key}" if jira_key else None
-                existing = existing_by_pr.get(pr_num)
-
-                jira_status = None
-                if jira_key and jira_service:
-                    try:
-                        issue = await jira_service.get_issue(jira_key)
-                        jira_status = (issue.get("fields") or {}).get("status", {}).get("name")
-                    except Exception as e:
-                        log.debug("jira.fetch_status_failed", key=jira_key, error=str(e))
-
-                # Filter by Internal Review status if requested
-                if only_internal_review:
-                    if not jira_status:
-                        continue
-                    normalized_status = jira_status.lower().strip()
-                    if "internal review" not in normalized_status and "in review" not in normalized_status:
-                        continue
-
-                items.append(
-                    PendingPrItem(
-                        pr_number=pr_num,
-                        pr_title=title,
-                        pr_url=pr_url,
-                        pr_author=author_name,
-                        source_branch=source_branch,
-                        target_branch=target_branch,
-                        jira_key=jira_key,
-                        jira_url=jira_url,
-                        jira_status=jira_status,
-                        workspace=workspace,
-                        repo_slug="fc-angular",
-                        created_on=pr.get("created_on"),
-                        updated_on=pr.get("updated_on"),
-                        existing_review_id=str(existing.id) if existing else None,
-                        existing_review_status=existing.status.value if existing else None,
-                        approvers=approvers,
-                        current_user_approved=current_user_approved,
-                    )
-                )
-        except Exception as exc:
-            log.error("bitbucket.fetch_pending_prs_failed", error=str(exc))
+            )
 
         return PendingPrsResponse(items=items, total=len(items))
 
@@ -705,8 +799,14 @@ class ReviewService:
     @staticmethod
     def _count_by_severity(findings: list[dict]) -> dict:
         counts: dict = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0}
+        pr_defect_origins = {"introduced_by_pr", "modified_by_pr", "worsened_by_pr"}
         for f in findings:
-            sev = f.get("severity", "")
-            if sev in counts:
-                counts[f"{sev}_count"] = counts.get(f"{sev}_count", 0) + 1
+            cls = f.get("classification")
+            orig = f.get("origin")
+            is_pr_defect = (cls == "finding" or orig in pr_defect_origins or f.get("affected_by_pr") is True)
+            if is_pr_defect:
+                sev = f.get("severity", "").lower()
+                key = f"{sev}_count"
+                if key in counts:
+                    counts[key] += 1
         return counts

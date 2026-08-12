@@ -1,6 +1,6 @@
 """
 Requirement Validation Agent
-——————————————————————————————
+─────────────────────────────
 Node:          req_validation
 Predecessor:   req_extraction
 Input:         ReviewState.requirements + ReviewState.pr_context (diff + files)
@@ -8,21 +8,16 @@ Output:        ReviewState.findings (requirement-category findings)
                ReviewState.validation_output (full ValidationOutput dict)
 
 Responsibilities:
-  1. Validate each extracted requirement against the actual code diff
-  2. Detect missing implementations (requirement exists, no code change)
-  3. Detect partial implementations (some but not all AC steps present)
-  4. Detect regression risks (existing behaviour changed without corresponding tests)
-  5. Produce ReviewFindings for all gaps found
+  1. Validate requirements against the actual code diff and code context
+  2. Treat EXPLICIT requirements as mandatory for formal compliance scoring
+  3. Treat INFERRED expectations as advisory (do NOT reduce formal compliance score)
+  4. Perform code-flow tracing (factories, upstream controllers, feature flags) before reporting gaps
+  5. Never infer scope mismatch based solely on class filenames
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any
-
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import ValidationError
+from typing import Any, Optional
 
 from app.agents.base_agent import BaseAgent
 from app.agents.models.validation_models import (
@@ -39,41 +34,52 @@ from app.core.logging import get_logger
 
 log = get_logger(__name__)
 
-
 # ── System Prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """
 You are a Senior QA Engineer and Requirements Traceability Expert.
 
-Your task is to validate whether a code diff correctly and completely implements a set of structured requirements.
+Your task is to validate whether a code diff correctly and completely implements a set of requirements.
 
-## Your Responsibilities
+## REQUIREMENT PROVENANCE & SCORING RULES
 
-### 1. Requirement Validation
-For EACH requirement provided, determine its implementation status:
-- **implemented**: Clearly present in the diff with correct logic
-- **partial**: Some aspects implemented but incomplete
-- **missing**: No evidence in the diff at all
-- **violated**: Code contradicts or breaks the requirement
-- **not_applicable**: Requirement doesn't apply to this code change (e.g. UI req in backend-only PR)
-- **cannot_determine**: Insufficient diff context to evaluate
+Requirements are divided into two distinct sources:
 
-### 2. Missing Requirements Detection
-Identify requirements with NO corresponding code change. These are high-priority findings.
+### A. EXPLICIT REQUIREMENTS (Source: explicit, IDs like AC-01, AC-02)
+- Authoritative requirements from Jira Acceptance Criteria.
+- Mandatory pass/fail criteria.
+- Validated as: implemented, partial, missing, violated, not_applicable.
+- Factor into the `overall_compliance_score` (0–100%).
 
-### 3. Partial Implementation Detection
-For partial implementations, specify EXACTLY:
-- What IS implemented (with file/line if visible)
-- What is NOT implemented
-- Estimated completion percentage
+### B. INFERRED EXPECTATIONS (Source: inferred, IDs like INF-01, INF-02)
+- Derived from Jira Summary/Description when formal ACs are missing or incomplete.
+- NOT contractual acceptance criteria.
+- MUST NOT reduce the `overall_compliance_score`.
+- MUST NOT be called "requirement violations".
+- MUST NOT be assigned CRITICAL or HIGH severity simply because code is absent.
+- Validated as: implemented, potential_gap, not_applicable, cannot_determine.
+- Findings MUST use title wording like: "Potential requirement gap" or "Expected behavior inferred from Jira description".
 
-### 4. Regression Risk Analysis
-Examine files changed for risks to EXISTING functionality:
-- Shared utilities modified without updating callers
-- Database schema changes without migration
-- API contract changes breaking consumers
-- Removed or renamed methods still referenced
-- Configuration changes with undocumented side-effects
+## CRITICAL CODE VERIFICATION RULES
+
+1. **Upstream Code Flow & Feature Flags**:
+   - Do NOT assume business logic belongs in the changed exporter or handler file alone.
+   - Check if feature flags, currency conversions, or eligibility rules are evaluated upstream in controllers, domain models, or service classes.
+   - If `foreignSellPrice` or configuration flags are pre-calculated upstream, the exporter class does NOT need to repeat the check.
+
+2. **No Class Name Scope Mismatches**:
+   - Do NOT report scope mismatch based solely on class filenames (e.g. `PricingFileType.CRUNCH_TIME_STD` mapping to `EDIClientPricingCafeZupas`).
+   - Mappings, factories, and inheritance hierarchies govern runtime selection. Class filenames alone are NOT evidence of a scope defect.
+
+3. **Distinguish FACT, INFERENCE, and UNVERIFIED RISK**:
+   - **FACT**: Supported directly by code in the diff.
+   - **INFERENCE**: Reasonable conclusion from available code flow.
+   - **UNVERIFIED RISK**: Potential runtime issue that cannot be proven from diff alone.
+   - Never report an UNVERIFIED RISK as a confirmed violation or CRITICAL/HIGH finding.
+
+## COMPLIANCE SCORING
+- If there are EXPLICIT requirements: `overall_compliance_score` = percentage of EXPLICIT requirements satisfied (0-100).
+- If there are NO explicit requirements (i.e. all requirements are source: "inferred"): `overall_compliance_score` MUST BE `null` (None in Python). Set `compliance_explanation` to "Formal requirement compliance: N/A — no explicit acceptance criteria provided in Jira."
 
 ## Output Format
 Return ONLY a single valid JSON object:
@@ -81,13 +87,16 @@ Return ONLY a single valid JSON object:
 ```json
 {
   "jira_key": "PROJ-123",
-  "overall_compliance_score": 0-100,
+  "overall_compliance_score": 80.0_or_null,
+  "has_explicit_ac": true_or_false,
+  "compliance_explanation": "...",
   "requirement_results": [
     {
-      "requirement_id": "FR-01",
-      "requirement_type": "functional",
+      "requirement_id": "AC-01",
+      "requirement_type": "acceptance_criterion",
+      "source": "explicit|inferred|verified_inferred",
       "description": "...",
-      "status": "implemented|partial|missing|violated|not_applicable|cannot_determine",
+      "status": "implemented|partial|missing|violated|potential_gap|not_applicable|cannot_determine",
       "evidence": "code snippet or null",
       "file_path": "path/to/file or null",
       "line_number": null,
@@ -98,9 +107,10 @@ Return ONLY a single valid JSON object:
   ],
   "missing_requirements": [
     {
-      "requirement_id": "FR-02",
+      "requirement_id": "AC-02",
+      "source": "explicit|inferred",
       "description": "...",
-      "severity": "critical|high|medium|low",
+      "severity": "critical|high|medium|low|info",
       "impact": "business impact description",
       "suggested_fix": "concrete implementation suggestion"
     }
@@ -108,6 +118,7 @@ Return ONLY a single valid JSON object:
   "partial_implementations": [
     {
       "requirement_id": "AC-01",
+      "source": "explicit|inferred",
       "description": "...",
       "implemented_part": "what is done",
       "missing_part": "what is not done",
@@ -130,13 +141,6 @@ Return ONLY a single valid JSON object:
   "validation_notes": "any important observations"
 }
 ```
-
-## Rules
-- Be precise — reference exact file paths and line numbers when visible in diff
-- Score compliance_score: 100 = all requirements fully implemented, 0 = nothing implemented
-- A requirement marked "not_applicable" does NOT reduce the compliance score
-- Treat each acceptance criterion independently
-- High-severity missing requirements must have detailed suggested_fix
 """.strip()
 
 
@@ -144,7 +148,7 @@ Return ONLY a single valid JSON object:
 
 async def req_validation_node(state: ReviewState) -> dict:
     """LangGraph node — validates requirements against the PR diff."""
-    agent = RequirementValidationAgent(state)  # state used as settings fallback here
+    agent = RequirementValidationAgent(state)
     return await agent.run(state)
 
 
@@ -164,9 +168,8 @@ class RequirementValidationAgent(BaseAgent):
         diff         = pr_context.get("diff", "")
         files        = pr_context.get("files_changed", [])
 
-        # Early-exit guards
         if not requirements:
-            logs.append(self._make_log("No requirements to validate — skipping.", "warning"))
+            logs.append(self._make_log("No requirements to validate — skipping.", "info"))
             return {"logs": logs, "current_agent": self.name, "progress_percent": 34}
 
         if not diff:
@@ -179,19 +182,29 @@ class RequirementValidationAgent(BaseAgent):
                  diff_bytes=len(diff))
 
         user_prompt = self._build_prompt(requirements, diff, files, pr_context, state)
+        class_structs = self._get_class_structures_prompt(state)
+        changed_methods = self._get_changed_methods_prompt(state)
+        context_chars = len(class_structs) + len(changed_methods)
 
         try:
-            raw_json = await self._invoke_llm_json(SYSTEM_PROMPT, user_prompt)
+            raw_json = await self._invoke_llm_json(
+                SYSTEM_PROMPT,
+                user_prompt,
+                context_mode="full_repository",
+                repository_context=True,
+                diff_chars=len(diff),
+                context_chars=context_chars,
+            )
             validation = self._parse_and_validate(
-                raw_json, state.get("jira_context", {}).get("jira_key", "UNKNOWN")
+                raw_json, state.get("jira_context", {}).get("jira_key", "UNKNOWN"), requirements
             )
             findings = self._to_findings(validation)
-
             existing_findings = list(state.get("findings", []))
 
+            score_str = f"{validation.overall_compliance_score:.0f}%" if validation.overall_compliance_score is not None else "N/A (No explicit ACs)"
             logs.append(self._make_log(
-                f"Validation complete — compliance: {validation.overall_compliance_score:.0f}%, "
-                f"missing: {validation.missing_count}, partial: {validation.partial_count}, "
+                f"Validation complete — formal compliance: {score_str}, "
+                f"explicit missing: {validation.missing_count}, explicit partial: {validation.partial_count}, "
                 f"regressions: {len(validation.regression_risks)}."
             ))
 
@@ -236,7 +249,6 @@ class RequirementValidationAgent(BaseAgent):
     ) -> str:
         req_block = self._format_requirements(requirements)
         files_block = self._format_files(files)
-        diff_block = self._truncate_diff(diff, 14000)
 
         return f"""## Pull Request Context
 PR: #{pr_context.get('pr_number')} — {pr_context.get('pr_title', '')}
@@ -252,23 +264,23 @@ Author: {pr_context.get('author', '')}
 
 ## Code Diff
 ```diff
-{diff_block}
+{diff}
 ```
 {self._get_class_structures_prompt(state)}
 {self._get_changed_methods_prompt(state)}
 
-Validate EACH requirement above against this diff and code context. Be thorough."""
+Validate EACH requirement above against this diff and code context. Preserve requirement provenance (explicit vs inferred)."""
 
     @staticmethod
     def _format_requirements(requirements: list[dict]) -> str:
         lines = []
-        for r in requirements[:30]:  # cap at 30 to stay in context window
+        for r in requirements[:30]:
             rid   = r.get("id", "?")
+            source = r.get("source", "explicit")
             rtype = r.get("type", "functional")
             desc  = r.get("description", "")
             pri   = r.get("priority", "must")
-            lines.append(f"[{rid}] ({rtype}, {pri}) {desc}")
-            # Add AC sub-fields if present
+            lines.append(f"[{rid}] (Source: {source}, Type: {rtype}, Priority: {pri}) {desc}")
             if r.get("given"):
                 lines.append(f"  Given: {r['given']}")
             if r.get("when"):
@@ -289,16 +301,27 @@ Validate EACH requirement above against this diff and code context. Be thorough.
 
     # ── Parser & validator ────────────────────────────────────────────────────
 
-    def _parse_and_validate(self, raw: dict, jira_key: str) -> ValidationOutput:
-        # Normalise top-level key
+    def _parse_and_validate(self, raw: dict, jira_key: str, requirements: list[dict]) -> ValidationOutput:
         raw["jira_key"] = jira_key
-        try:
-            return ValidationOutput.model_validate(raw)
-        except ValidationError as e:
-            log.warning("agent.req_validation.partial_parse", errors=str(e)[:200])
-            return self._build_partial_output(raw, jira_key)
 
-    def _build_partial_output(self, raw: dict, jira_key: str) -> ValidationOutput:
+        explicit_reqs = [r for r in requirements if r.get("source") == "explicit" or r.get("mandatory") is True]
+        has_explicit = len(explicit_reqs) > 0
+
+        raw["has_explicit_ac"] = has_explicit
+        if not has_explicit:
+            raw["overall_compliance_score"] = None
+            raw["compliance_explanation"] = "Formal requirement compliance: N/A — no explicit acceptance criteria provided in Jira."
+
+        try:
+            val = ValidationOutput.model_validate(raw)
+            if has_explicit and val.overall_compliance_score is not None:
+                val.compliance_explanation = f"Formal requirement compliance: {val.overall_compliance_score:.0f}% (calculated against explicit Jira ACs)."
+            return val
+        except Exception as e:
+            log.warning("agent.req_validation.partial_parse", errors=str(e)[:200])
+            return self._build_partial_output(raw, jira_key, has_explicit)
+
+    def _build_partial_output(self, raw: dict, jira_key: str, has_explicit: bool) -> ValidationOutput:
         def safe_list(items, model):
             result = []
             for item in (items or []):
@@ -308,13 +331,17 @@ Validate EACH requirement above against this diff and code context. Be thorough.
                     pass
             return result
 
+        score = float(raw.get("overall_compliance_score", 50)) if (has_explicit and raw.get("overall_compliance_score") is not None) else None
+
         return ValidationOutput(
             jira_key=jira_key,
-            overall_compliance_score=float(raw.get("overall_compliance_score", 50)),
+            overall_compliance_score=score,
+            has_explicit_ac=has_explicit,
+            compliance_explanation="Formal requirement compliance: N/A — no explicit acceptance criteria provided in Jira." if not has_explicit else f"Formal requirement compliance: {score:.0f}%",
             requirement_results=safe_list(raw.get("requirement_results", []), RequirementValidationResult),
-            missing_requirements=safe_list(raw.get("missing_requirements", []),  MissingRequirement),
+            missing_requirements=safe_list(raw.get("missing_requirements", []), MissingRequirement),
             partial_implementations=safe_list(raw.get("partial_implementations", []), PartialImplementation),
-            regression_risks=safe_list(raw.get("regression_risks", []),           RegressionRisk),
+            regression_risks=safe_list(raw.get("regression_risks", []), RegressionRisk),
             validation_notes=raw.get("validation_notes", "Partial parse — some data may be missing."),
         )
 
@@ -323,45 +350,64 @@ Validate EACH requirement above against this diff and code context. Be thorough.
     def _to_findings(self, validation: ValidationOutput) -> list[FindingDict]:
         findings: list[FindingDict] = []
 
-        # 1. Missing requirements → high/critical findings
+        # 1. Missing requirements
         for mr in validation.missing_requirements:
+            is_explicit = mr.source == "explicit" or mr.requirement_id.startswith("AC-")
+            sev = mr.severity if is_explicit else "medium"
+            if not is_explicit and sev in ("critical", "high"):
+                sev = "medium"
+
+            title_prefix = "Missing Implementation:" if is_explicit else "Potential Requirement Gap (Inferred):"
+            comment_header = f"**Requirement `{mr.requirement_id}` not implemented.**" if is_explicit else f"**Expected behavior `{mr.requirement_id}` inferred from Jira description:**"
+
             findings.append(self._make_finding(
-                severity=mr.severity,
-                title=f"Missing Implementation: {mr.requirement_id}",
+                severity=sev,
+                title=f"{title_prefix} {mr.requirement_id}",
                 description=mr.description,
                 recommendation=mr.suggested_fix,
                 review_comment=(
-                    f"**Requirement `{mr.requirement_id}` not implemented.**\n\n"
+                    f"{comment_header}\n\n"
                     f"{mr.description}\n\n"
-                    f"**Business Impact:** {mr.impact}\n\n"
+                    f"**Impact / Context:** {mr.impact}\n\n"
                     f"**Suggested Fix:** {mr.suggested_fix}"
                 ),
                 evidence=None,
-                tags=["missing-requirement", mr.requirement_id],
+                origin="introduced_by_pr" if is_explicit else "pre_existing",
+                classification="finding" if is_explicit else "recommendation",
+                affected_by_pr=is_explicit,
+                tags=["missing-requirement", mr.requirement_id, "explicit" if is_explicit else "inferred"],
             ))
 
-        # 2. Partial implementations → medium findings
+        # 2. Partial implementations
         for pi in validation.partial_implementations:
-            sev = pi.severity if pi.severity in ("critical","high","medium","low","info") else "medium"
+            is_explicit = pi.source == "explicit" or pi.requirement_id.startswith("AC-")
+            sev = pi.severity if pi.severity in ("critical", "high", "medium", "low", "info") else "medium"
+            if not is_explicit and sev in ("critical", "high"):
+                sev = "medium"
+
+            title_prefix = "Partial Implementation:" if is_explicit else "Inferred Expectation Partially Met:"
             findings.append(self._make_finding(
                 severity=sev,
-                title=f"Partial Implementation: {pi.requirement_id} ({pi.completion_percent}% complete)",
+                title=f"{title_prefix} {pi.requirement_id} ({pi.completion_percent}% complete)",
                 description=pi.description,
                 recommendation=f"Complete the missing part: {pi.missing_part}",
                 review_comment=(
-                    f"**Requirement `{pi.requirement_id}` is only partially implemented "
-                    f"({pi.completion_percent}%).**\n\n"
+                    f"**Requirement `{pi.requirement_id}` is partially met ({pi.completion_percent}%).**\n\n"
                     f"✅ **Done:** {pi.implemented_part}\n\n"
                     f"❌ **Missing:** {pi.missing_part}"
                 ),
                 file_path=pi.file_path,
                 line_number=pi.line_number,
-                tags=["partial-implementation", pi.requirement_id],
+                origin="modified_by_pr" if is_explicit else "pre_existing",
+                classification="finding" if is_explicit else "recommendation",
+                affected_by_pr=is_explicit,
+                tags=["partial-implementation", pi.requirement_id, "explicit" if is_explicit else "inferred"],
             ))
 
-        # 3. Violated requirements → critical/high findings
+        # 3. Violated / Potential Gap requirements
         for rr in validation.requirement_results:
-            if rr.status == ValidationStatus.violated:
+            is_explicit = rr.source == "explicit" or rr.requirement_id.startswith("AC-")
+            if rr.status == ValidationStatus.violated and is_explicit:
                 findings.append(self._make_finding(
                     severity="high",
                     title=f"Requirement Violated: {rr.requirement_id}",
@@ -377,10 +423,33 @@ Validate EACH requirement above against this diff and code context. Be thorough.
                     line_number=rr.line_number,
                     evidence=rr.evidence,
                     confidence_score=rr.confidence,
-                    tags=["requirement-violated", rr.requirement_id],
+                    origin="introduced_by_pr",
+                    classification="finding",
+                    affected_by_pr=True,
+                    tags=["requirement-violated", rr.requirement_id, "explicit"],
+                ))
+            elif rr.status in (ValidationStatus.potential_gap, ValidationStatus.missing, ValidationStatus.partial) and not is_explicit:
+                findings.append(self._make_finding(
+                    severity="low",
+                    title=f"Expected behavior inferred from Jira description: {rr.requirement_id}",
+                    description=rr.gap_description or rr.description,
+                    recommendation=rr.suggestion or "Verify whether FX eligibility decision occurs upstream before applying this change.",
+                    review_comment=(
+                        f"**Advisory Expectation (`{rr.requirement_id}`):**\n\n"
+                        f"{rr.description}\n\n"
+                        f"**Observation:** {rr.gap_description or 'Verify upstream flow.'}"
+                    ),
+                    file_path=rr.file_path,
+                    line_number=rr.line_number,
+                    evidence=rr.evidence,
+                    confidence_score=rr.confidence,
+                    origin="pre_existing",
+                    classification="recommendation",
+                    affected_by_pr=False,
+                    tags=["inferred-expectation", rr.requirement_id, "inferred"],
                 ))
 
-        # 4. Regression risks → severity based on risk level
+        # 4. Regression risks
         severity_map = {
             RegressionRiskLevel.high:   "high",
             RegressionRiskLevel.medium: "medium",
@@ -405,19 +474,19 @@ Validate EACH requirement above against this diff and code context. Be thorough.
                 tags=["regression-risk", reg.risk_level],
             ))
 
-        # 5. Low compliance score → summary finding
-        if validation.overall_compliance_score < 60:
+        # 5. Low compliance score summary finding — ONLY IF EXPLICIT ACs EXIST
+        if validation.has_explicit_ac and validation.overall_compliance_score is not None and validation.overall_compliance_score < 60:
             findings.append(self._make_finding(
                 severity="high",
                 title=f"Low Requirements Compliance: {validation.overall_compliance_score:.0f}%",
                 description=(
-                    f"Only {validation.overall_compliance_score:.0f}% of requirements are implemented. "
+                    f"Only {validation.overall_compliance_score:.0f}% of explicit requirements are implemented. "
                     f"{validation.missing_count} requirement(s) missing, "
                     f"{validation.partial_count} partial."
                 ),
                 recommendation="Review and implement all missing and partial requirements before merging.",
                 review_comment=(
-                    f"**This PR implements only {validation.overall_compliance_score:.0f}% of its requirements.**\n\n"
+                    f"**This PR implements only {validation.overall_compliance_score:.0f}% of its explicit requirements.**\n\n"
                     f"| Status | Count |\n|--------|-------|\n"
                     f"| ✅ Implemented | {validation.implemented_count} |\n"
                     f"| ⚠ Partial | {validation.partial_count} |\n"
@@ -435,34 +504,41 @@ Validate EACH requirement above against this diff and code context. Be thorough.
     def evaluate_compliance(validation: ValidationOutput) -> dict:
         """
         Returns a structured evaluation report for scoring and reporting.
-        Usable outside the agent — e.g. in CI gates.
+        Filters ONLY for explicit requirements.
         """
-        total = len(validation.requirement_results)
-        if total == 0:
-            return {"score": 0, "grade": "N/A", "summary": "No requirements to evaluate."}
+        if not validation.has_explicit_ac or validation.overall_compliance_score is None:
+            return {
+                "score": None,
+                "grade": "N/A",
+                "summary": "Formal requirement compliance: N/A — no explicit acceptance criteria provided in Jira.",
+                "has_explicit_ac": False,
+            }
 
-        # Weighted scoring
+        explicit_results = [r for r in validation.requirement_results if r.source == "explicit"]
+        total = len(explicit_results)
+        if total == 0:
+            return {"score": None, "grade": "N/A", "summary": "No explicit requirements to evaluate.", "has_explicit_ac": False}
+
         weights = {
             ValidationStatus.implemented:      1.0,
             ValidationStatus.partial:           0.5,
             ValidationStatus.missing:           0.0,
             ValidationStatus.violated:         -0.5,
-            ValidationStatus.not_applicable:    1.0,  # excluded from denominator
+            ValidationStatus.not_applicable:    1.0,
             ValidationStatus.cannot_determine:  0.5,
         }
-        na_count = sum(1 for r in validation.requirement_results if r.status == ValidationStatus.not_applicable)
+        na_count = sum(1 for r in explicit_results if r.status == ValidationStatus.not_applicable)
         effective_total = total - na_count
         if effective_total == 0:
             score = 100.0
         else:
             raw_score = sum(
                 weights.get(r.status, 0)
-                for r in validation.requirement_results
+                for r in explicit_results
                 if r.status != ValidationStatus.not_applicable
             )
             score = max(0.0, min(100.0, (raw_score / effective_total) * 100))
 
-        # Regression penalty
         high_reg = sum(1 for r in validation.regression_risks if r.risk_level == RegressionRiskLevel.high)
         score = max(0.0, score - (high_reg * 10))
 
@@ -471,6 +547,7 @@ Validate EACH requirement above against this diff and code context. Be thorough.
         return {
             "score":             round(score, 1),
             "grade":             grade,
+            "has_explicit_ac":   True,
             "total_requirements": total,
             "effective_total":   effective_total,
             "implemented":       validation.implemented_count,

@@ -3,7 +3,7 @@ Pydantic v2 models for Requirement Validation Agent output.
 """
 from __future__ import annotations
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -12,6 +12,7 @@ class ValidationStatus(str, Enum):
     partial          = "partial"
     missing          = "missing"
     violated         = "violated"
+    potential_gap    = "potential_gap"
     not_applicable   = "not_applicable"
     cannot_determine = "cannot_determine"
 
@@ -26,8 +27,9 @@ class RegressionRiskLevel(str, Enum):
 # ── Per-requirement validation result ────────────────────────────────────────
 
 class RequirementValidationResult(BaseModel):
-    requirement_id:   str             = Field(..., description="e.g. FR-01, AC-02")
-    requirement_type: str             = Field(..., description="functional | acceptance_criterion | business_rule | api | ui | performance")
+    requirement_id:   str             = Field(..., description="e.g. AC-01 or INF-01")
+    requirement_type: str             = Field(default="acceptance_criterion", description="functional | acceptance_criterion | business_rule | api | ui | performance")
+    source:           str             = Field(default="explicit", description="explicit | inferred | verified_inferred")
     description:      str             = Field(..., description="Requirement text")
     status:           ValidationStatus = Field(..., description="Implementation status")
     evidence:         Optional[str]   = Field(None,  description="Code snippet or line proving status")
@@ -45,24 +47,26 @@ class RegressionRisk(BaseModel):
     risk_level:    RegressionRiskLevel
     area:          str                = Field(..., description="Feature area at risk")
     description:   str                = Field(..., description="What could regress and why")
-    affected_files: list[str]         = Field(default_factory=list)
+    affected_files: List[str]         = Field(default_factory=list)
     mitigation:    str                = Field(..., description="Recommended mitigation")
 
 
 # ── Missing requirement ───────────────────────────────────────────────────────
 
 class MissingRequirement(BaseModel):
-    requirement_id: str  = Field(..., description="e.g. FR-03")
+    requirement_id: str  = Field(..., description="e.g. AC-03 or INF-01")
+    source:         str  = Field(default="explicit", description="explicit | inferred | verified_inferred")
     description:    str  = Field(..., description="What is missing")
-    severity:       str  = Field(..., description="critical | high | medium | low")
-    impact:         str  = Field(..., description="Business impact of missing implementation")
+    severity:       str  = Field(default="high", description="critical | high | medium | low | info")
+    impact:         str  = Field(..., description="Business impact description")
     suggested_fix:  str  = Field(..., description="Code-level suggestion to implement this")
 
 
 # ── Partial implementation ────────────────────────────────────────────────────
 
 class PartialImplementation(BaseModel):
-    requirement_id:     str           = Field(..., description="e.g. AC-01")
+    requirement_id:     str           = Field(..., description="e.g. AC-01 or INF-01")
+    source:             str           = Field(default="explicit", description="explicit | inferred | verified_inferred")
     description:        str           = Field(..., description="What is partially done")
     implemented_part:   str           = Field(..., description="What IS implemented")
     missing_part:       str           = Field(..., description="What is NOT implemented")
@@ -76,15 +80,19 @@ class PartialImplementation(BaseModel):
 
 class ValidationOutput(BaseModel):
     jira_key:                    str   = Field(...)
-    overall_compliance_score:    float = Field(..., ge=0.0, le=100.0,
-                                               description="0=nothing implemented, 100=fully compliant")
-    requirement_results:         list[RequirementValidationResult] = Field(default_factory=list)
-    missing_requirements:        list[MissingRequirement]          = Field(default_factory=list)
-    partial_implementations:     list[PartialImplementation]       = Field(default_factory=list)
-    regression_risks:            list[RegressionRisk]              = Field(default_factory=list)
-    validation_notes:            str  = Field(default="")
+    overall_compliance_score:    Optional[float] = Field(None, ge=0.0, le=100.0,
+                                                       description="Compliance score for EXPLICIT requirements (0-100), or None/null if no explicit ACs exist")
+    has_explicit_ac:             bool  = Field(default=True, description="False if no explicit Jira ACs exist")
+    compliance_explanation:      str   = Field(default="", description="Explanation of compliance score or N/A state")
+    requirement_results:         List[RequirementValidationResult] = Field(default_factory=list)
+    missing_requirements:        List[MissingRequirement]          = Field(default_factory=list)
+    partial_implementations:     List[PartialImplementation]       = Field(default_factory=list)
+    regression_risks:            List[RegressionRisk]              = Field(default_factory=list)
+    validation_notes:            str   = Field(default="")
 
-    # Computed summary counts
+    # Computed summary counts for explicit requirements
+    explicit_count:        int = Field(default=0)
+    inferred_count:        int = Field(default=0)
     implemented_count:     int = Field(default=0)
     partial_count:         int = Field(default=0)
     missing_count:         int = Field(default=0)
@@ -92,17 +100,22 @@ class ValidationOutput(BaseModel):
     high_regression_count: int = Field(default=0)
 
     def model_post_init(self, __context) -> None:
+        self.explicit_count = sum(1 for r in self.requirement_results if r.source == "explicit")
+        self.inferred_count = sum(1 for r in self.requirement_results if r.source != "explicit")
+        
         self.implemented_count = sum(
-            1 for r in self.requirement_results if r.status == ValidationStatus.implemented
+            1 for r in self.requirement_results if r.status == ValidationStatus.implemented and r.source == "explicit"
         )
         self.partial_count = sum(
-            1 for r in self.requirement_results if r.status == ValidationStatus.partial
-        ) + len(self.partial_implementations)
+            1 for r in self.requirement_results if r.status == ValidationStatus.partial and r.source == "explicit"
+        ) + sum(1 for p in self.partial_implementations if p.source == "explicit")
+        
         self.missing_count = sum(
-            1 for r in self.requirement_results if r.status == ValidationStatus.missing
-        ) + len(self.missing_requirements)
+            1 for r in self.requirement_results if r.status == ValidationStatus.missing and r.source == "explicit"
+        ) + sum(1 for m in self.missing_requirements if m.source == "explicit")
+        
         self.violated_count = sum(
-            1 for r in self.requirement_results if r.status == ValidationStatus.violated
+            1 for r in self.requirement_results if r.status == ValidationStatus.violated and r.source == "explicit"
         )
         self.high_regression_count = sum(
             1 for r in self.regression_risks if r.risk_level == RegressionRiskLevel.high

@@ -102,7 +102,11 @@ class FindingRepository:
         self.db = db
 
     async def bulk_create(self, findings: list[dict]) -> list[ReviewFinding]:
-        objs = [ReviewFinding(**f) for f in findings]
+        valid_cols = {c.name for c in ReviewFinding.__table__.columns}
+        objs = [
+            ReviewFinding(**{k: v for k, v in f.items() if k in valid_cols})
+            for f in findings
+        ]
         self.db.add_all(objs)
         await self.db.flush()
         return objs

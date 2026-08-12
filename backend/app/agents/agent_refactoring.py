@@ -11,30 +11,21 @@ SYSTEM_PROMPT = """
 You are a Senior Software Architect specializing in clean code and design patterns.
 Analyze the provided code diff for refactoring opportunities.
 
+SEVERITY CALIBRATION RULE:
+Normal refactoring recommendations (duplicate code, duplicate validation logic, extract-method suggestions, simplifying complex code, design pattern suggestions) MUST be LOW severity (`severity: 'low'`).
+Do NOT mark simple duplication or clean-up suggestions as HIGH or CRITICAL severity unless there is a demonstrable functional defect, security flaw, or crash.
+
 Identify the following issues:
 
-HIGH priority:
+LOW priority (default for refactoring):
+- Duplicate code or validation logic across methods or classes
+- Extract-method or extract-service opportunities
 - God classes (>200 lines, >10 public methods, multiple responsibilities)
 - Long methods (>30 lines or >5 cyclomatic complexity)
 - Deep nesting (>3 levels of if/for/while)
-- Duplicate logic across multiple methods or files
-
-MEDIUM priority:
-- Poor abstraction (implementation details leaking through interfaces)
-- Missing design patterns where they would simplify code:
-  * Strategy Pattern — for swappable algorithms or behavior
-  * Factory/Builder Pattern — for complex object construction
-  * Observer Pattern — for event-driven code
-  * Command Pattern — for undo/redo or queued operations
-  * Decorator Pattern — for augmenting behavior without subclassing
-- Primitive obsession (using primitives where Value Objects would be clearer)
-- Data clumps (same group of parameters appearing together repeatedly)
-
-LOW priority:
+- Primitive obsession or missing design patterns (Strategy, Factory, Builder)
 - Dead code or commented-out code
 - Inconsistent naming conventions
-- Missing or misleading comments
-- Over-engineering (unnecessary abstractions)
 
 For each finding:
 - Reference the specific code
@@ -42,7 +33,7 @@ For each finding:
 
 Return a JSON array:
 [{
-  "severity": "high|medium|low",
+  "severity": "low",
   "title": "...",
   "description": "...",
   "evidence": "The problematic code section",
@@ -67,7 +58,7 @@ class RefactoringAgent(BaseAgent):
         logs.append(self._log(state, "Identifying refactoring opportunities"))
 
         pr_context = state.get("pr_context") or {}
-        diff = pr_context.get("diff", "")[:20000]
+        diff = pr_context.get("diff", "")
 
         if not diff:
             return {**state, "logs": logs, "findings": findings, "current_agent": self.name, "progress_percent": 75}
@@ -77,15 +68,23 @@ Changed files: {[self.get_file_path(f) for f in pr_context.get('changed_files', 
 
 Diff:
 {diff}
-{self._get_class_structures_prompt(state)}
-{self._get_changed_methods_prompt(state)}
 """
 
         try:
-            raw_findings = await self._invoke_llm_json(SYSTEM_PROMPT, user_prompt)
+            raw_findings = await self._invoke_llm_json(
+                SYSTEM_PROMPT,
+                user_prompt,
+                context_mode="diff_only",
+                repository_context=False,
+                diff_chars=len(diff),
+                context_chars=0,
+            )
             for f in raw_findings:
+                sev = f.get("severity", "low")
+                if sev in ("high", "critical"):
+                    sev = "low"
                 findings.append(self._make_finding(
-                    severity=f.get("severity", "medium"),
+                    severity=sev,
                     title=f.get("title", "Refactoring opportunity"),
                     description=f.get("description", ""),
                     recommendation=f.get("recommendation", ""),
