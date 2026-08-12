@@ -18,8 +18,11 @@ export class ReviewApiService {
 
   constructor(private http: HttpClient) {}
 
-  getPendingPrs(onlyInternalReview = true): Observable<PendingPrsResponse> {
-    const params = new HttpParams().set('only_internal_review', onlyInternalReview);
+  getPendingPrs(onlyInternalReview = true, authorOnly = false): Observable<PendingPrsResponse> {
+    let params = new HttpParams().set('only_internal_review', onlyInternalReview);
+    if (authorOnly) {
+      params = params.set('author_only', true);
+    }
     return this.http.get<PendingPrsResponse>(`${this.base}/reviews/pending-prs`, { params });
   }
 

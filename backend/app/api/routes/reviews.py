@@ -58,11 +58,12 @@ async def list_reviews(
 @router.get("/pending-prs", response_model=PendingPrsResponse)
 async def get_pending_prs(
     only_internal_review: bool = Query(True),
+    author_only: bool = Query(False),
     service: ReviewService = Depends(get_review_service),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ):
     """Fetch open pull requests from Bitbucket available to review, filtered by Jira Internal Review status by default."""
-    return await service.get_pending_prs(user_id, only_internal_review=only_internal_review)
+    return await service.get_pending_prs(user_id, only_internal_review=only_internal_review, author_only=author_only)
 
 
 @router.get("/{review_id}", response_model=ReviewResponse)

@@ -1,6 +1,7 @@
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { CommonModule } from '@angular/common';
+import { PendingPrStore } from './core/store/pending-pr.store';
 
 @Component({
   selector: 'app-root',
@@ -60,7 +61,16 @@ import { CommonModule } from '@angular/common';
               <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
               <line x1="6" y1="9" x2="6" y2="21"/>
             </svg>
-            Pending PRs
+            <span>Pending PRs</span>
+            <span *ngIf="pendingPrStore.count() > 0" class="nav-badge">{{ pendingPrStore.count() }}</span>
+          </a>
+          <a routerLink="/my-prs" routerLinkActive="active" class="nav-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+            <span>My PRs</span>
+            <span *ngIf="pendingPrStore.myPrs().length > 0" class="nav-badge">{{ pendingPrStore.myPrs().length }}</span>
           </a>
           <a routerLink="/settings" routerLinkActive="active" class="nav-item">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -201,6 +211,20 @@ import { CommonModule } from '@angular/common';
       }
     }
 
+    .nav-badge {
+      margin-left: auto;
+      background: linear-gradient(135deg, #6366f1 0%, #38bdf8 100%);
+      color: #ffffff;
+      font-size: 0.68rem;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 10px;
+      min-width: 18px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(99,102,241,0.4);
+      line-height: 1;
+    }
+
     .sidebar-footer {
       padding: 16px 20px 0;
       border-top: 1px solid var(--color-border);
@@ -220,4 +244,6 @@ import { CommonModule } from '@angular/common';
     }
   `]
 })
-export class AppComponent {}
+export class AppComponent {
+  readonly pendingPrStore = inject(PendingPrStore);
+}

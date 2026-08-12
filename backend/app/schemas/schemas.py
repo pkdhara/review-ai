@@ -115,6 +115,8 @@ class PendingPrItem(BaseModel):
     updated_on:             Optional[str] = None
     existing_review_id:     Optional[str] = None
     existing_review_status: Optional[str] = None
+    approvers:              list[str] = []
+    current_user_approved:  bool = False
 
 
 class PendingPrsResponse(BaseModel):

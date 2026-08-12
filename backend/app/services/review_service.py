@@ -535,6 +535,7 @@ class ReviewService:
         self,
         user_id: uuid.UUID,
         only_internal_review: bool = True,
+        author_only: bool = False,
     ) -> PendingPrsResponse:
         cfg = await self.settings.get(user_id)
         if not cfg:
@@ -567,12 +568,22 @@ class ReviewService:
                 log.warning("jira.init_failed_in_pending_prs", error=str(exc))
 
         items: list[PendingPrItem] = []
+        current_user_uuid = None
+        try:
+            user_data = await bb._get("/user")
+            current_user_uuid = user_data.get("uuid")
+        except Exception as e:
+            log.warning("bitbucket.fetch_user_failed", error=str(e))
+
         try:
             prs_data = await bb._get(f"/repositories/{workspace}/fc-angular/pullrequests", params={"state": "OPEN"})
             prs = prs_data.get("values", [])
 
             db_reviews, _ = await self.reviews.list_reviews(page=1, page_size=100)
-            existing_by_pr = {r.pr_number: r for r in db_reviews if r.pr_number}
+            existing_by_pr = {}
+            for r in db_reviews:
+                if r.pr_number and r.pr_number not in existing_by_pr:
+                    existing_by_pr[r.pr_number] = r
 
             for pr in prs:
                 pr_num = pr.get("id")
@@ -587,6 +598,25 @@ class ReviewService:
                     or author_data.get("nickname")
                     or (author_data.get("user") or {}).get("display_name")
                 )
+
+                participants = pr.get("participants", [])
+                approvers = []
+                current_user_approved = False
+                for p in participants:
+                    if p.get("approved"):
+                        u = p.get("user", {})
+                        d_name = u.get("display_name") or u.get("nickname") or "Unknown"
+                        approvers.append(d_name)
+                        if current_user_uuid and u.get("uuid") == current_user_uuid:
+                            current_user_approved = True
+
+                if author_only:
+                    author_uuid = author_data.get("uuid")
+                    if current_user_uuid and author_uuid != current_user_uuid:
+                        continue
+                else:
+                    if current_user_approved:
+                        continue
 
                 jira_key = (
                     BitbucketService.extract_jira_key(source_branch)
@@ -628,6 +658,8 @@ class ReviewService:
                         updated_on=pr.get("updated_on"),
                         existing_review_id=str(existing.id) if existing else None,
                         existing_review_status=existing.status.value if existing else None,
+                        approvers=approvers,
+                        current_user_approved=current_user_approved,
                     )
                 )
         except Exception as exc:

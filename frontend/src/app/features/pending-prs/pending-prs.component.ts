@@ -1,10 +1,11 @@
-import { Component, OnInit, signal, computed, inject } from '@angular/core';
+import { Component, OnInit, inject, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, ActivatedRoute } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { ReviewApiService } from '../../core/services/review-api.service';
 import { PendingPrItem } from '../../core/models/models';
+import { PendingPrStore } from '../../core/store/pending-pr.store';
 
 @Component({
   selector: 'app-pending-prs',
@@ -25,18 +26,21 @@ import { PendingPrItem } from '../../core/models/models';
           </div>
           <div>
             <h1 class="page-title">
-              PR Reviews Pending
-              <span class="count-badge" *ngIf="!loading()">{{ filteredPrs().length }}</span>
+              {{ isMineMode() ? 'My Pull Requests' : 'PR Reviews Pending' }}
+              <span class="count-badge" *ngIf="!isLoading()">{{ filteredPrs().length }}</span>
             </h1>
-            <p class="page-subtitle">
-              {{ onlyInternalReview() ? 'Pull requests for Jira tasks currently in Internal Review' : 'All open Bitbucket pull requests' }}
+            <p class="page-subtitle" *ngIf="!isMineMode()">
+              {{ store.onlyInternalReview() ? 'Pull requests for Jira tasks currently in Internal Review' : 'All open Bitbucket pull requests' }}
+            </p>
+            <p class="page-subtitle" *ngIf="isMineMode()">
+              Pull requests created by you
             </p>
           </div>
         </div>
 
         <div class="header-actions">
-          <button class="btn btn-secondary" (click)="loadPendingPrs()" [disabled]="loading()">
-            <span class="spin-icon" [class.spinning]="loading()">🔄</span>
+          <button class="btn btn-secondary" (click)="loadPendingPrs()" [disabled]="store.loading()">
+            <span class="spin-icon" [class.spinning]="store.loading()">🔄</span>
             Refresh PRs
           </button>
         </div>
@@ -60,40 +64,52 @@ import { PendingPrItem } from '../../core/models/models';
           <label class="toggle-label">
             <input
               type="checkbox"
-              [checked]="onlyInternalReview()"
+              [checked]="store.onlyInternalReview()"
               (change)="toggleInternalReviewFilter($event)"
             />
             <span class="toggle-text">📌 Internal Review Only</span>
           </label>
+
+          <button
+            class="btn btn-sm archive-tab-btn"
+            [class.active]="store.showArchived()"
+            (click)="store.toggleShowArchived()"
+            title="Toggle between Active PRs and Archived PRs"
+          >
+            📦 Archived <span class="archive-count" *ngIf="store.archivedCount() > 0">({{ store.archivedCount() }})</span>
+          </button>
         </div>
       </div>
 
       <!-- Loading State -->
-      <div *ngIf="loading()" class="loading-container">
+      <div *ngIf="isLoading()" class="loading-container">
         <div class="spinner"></div>
         <p>Fetching PRs and cross-referencing Jira task status...</p>
       </div>
 
       <!-- Error Banner -->
-      <div *ngIf="error()" class="error-banner">
-        ⚠️ {{ error() }}
+      <div *ngIf="store.error()" class="error-banner">
+        ⚠️ {{ store.error() }}
         <button class="btn btn-sm btn-secondary" (click)="loadPendingPrs()">Retry</button>
       </div>
 
       <!-- Empty State -->
-      <div *ngIf="!loading() && filteredPrs().length === 0" class="empty-state">
-        <div class="empty-icon">🎉</div>
-        <h3>No Pending PR Reviews</h3>
-        <p *ngIf="onlyInternalReview()">
+      <div *ngIf="!isLoading() && filteredPrs().length === 0" class="empty-state">
+        <div class="empty-icon">{{ store.showArchived() ? '📦' : '🎉' }}</div>
+        <h3>{{ store.showArchived() ? 'No Archived Pull Requests' : 'No Pending PR Reviews' }}</h3>
+        <p *ngIf="!store.showArchived() && store.onlyInternalReview()">
           No open PRs match Jira tasks in "Internal Review". Try unchecking "Internal Review Only" to view all open PRs.
         </p>
-        <p *ngIf="!onlyInternalReview()">
+        <p *ngIf="!store.showArchived() && !store.onlyInternalReview()">
           No open Bitbucket pull requests match your search criteria.
+        </p>
+        <p *ngIf="store.showArchived()">
+          You have not archived any pull requests yet. Click "Archive" on any PR card to hide it.
         </p>
       </div>
 
       <!-- PR List Grid -->
-      <div *ngIf="!loading() && filteredPrs().length > 0" class="pr-grid">
+      <div *ngIf="!isLoading() && filteredPrs().length > 0" class="pr-grid">
         <div *ngFor="let item of filteredPrs()" class="pr-card">
           <!-- Card Top: Header & Badges -->
           <div class="pr-card-header">
@@ -102,9 +118,34 @@ import { PendingPrItem } from '../../core/models/models';
               <h3 class="pr-title" [title]="item.pr_title">{{ item.pr_title }}</h3>
             </div>
             
-            <div class="pr-status-badge" [class]="'status-' + (item.existing_review_status || 'unreviewed')">
-              <span class="dot"></span>
-              {{ getStatusLabel(item.existing_review_status) }}
+            <div class="header-right-actions">
+              <div class="pr-status-badge" [class]="'status-' + (item.existing_review_status || 'unreviewed')">
+                <span class="dot"></span>
+                {{ getStatusLabel(item.existing_review_status) }}
+              </div>
+              <button
+                *ngIf="!store.isArchived(item)"
+                class="icon-btn-compact archive-compact-btn"
+                (click)="store.archivePr(item)"
+                title="Archive PR"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="21 8 21 21 3 21 3 8"/>
+                  <rect x="1" y="3" width="22" height="5"/>
+                  <line x1="10" y1="12" x2="14" y2="12"/>
+                </svg>
+              </button>
+              <button
+                *ngIf="store.isArchived(item)"
+                class="icon-btn-compact restore-compact-btn"
+                (click)="store.unarchivePr(item)"
+                title="Restore PR"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="9 10 4 15 9 20"/>
+                  <path d="M20 4v7a4 4 0 0 1-4 4H4"/>
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -142,6 +183,14 @@ import { PendingPrItem } from '../../core/models/models';
 
               <span *ngIf="item.jira_status" class="jira-status-chip">
                 📌 {{ item.jira_status }}
+              </span>
+
+              <span 
+                *ngIf="item.approvers && item.approvers.length > 0" 
+                class="approvals-chip"
+                [title]="'Approved by: ' + item.approvers.join(', ')"
+              >
+                ✅ {{ item.approvers.length }} {{ item.approvers.length === 1 ? 'Approval' : 'Approvals' }}
               </span>
             </div>
 
@@ -412,8 +461,13 @@ import { PendingPrItem } from '../../core/models/models';
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      gap: 12px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
+    }
+
+    .header-right-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .pr-title-group {
@@ -565,6 +619,18 @@ import { PendingPrItem } from '../../core/models/models';
       white-space: nowrap;
     }
 
+    .approvals-chip {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.12);
+      padding: 3px 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      white-space: nowrap;
+      cursor: help;
+    }
+
     .branch-flow {
       display: flex;
       align-items: center;
@@ -676,25 +742,97 @@ import { PendingPrItem } from '../../core/models/models';
           border-color: rgba(255, 255, 255, 0.2);
         }
       }
+
+      &.btn-archive {
+        background: rgba(255, 255, 255, 0.04);
+        color: #94a3b8;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+
+        &:hover:not(:disabled) {
+          background: rgba(239, 68, 68, 0.15);
+          color: #fca5a5;
+          border-color: rgba(239, 68, 68, 0.3);
+        }
+      }
+
+      &.btn-restore {
+        background: rgba(16, 185, 129, 0.1);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.2);
+
+        &:hover:not(:disabled) {
+          background: rgba(16, 185, 129, 0.2);
+          color: #6ee7b7;
+          border-color: rgba(16, 185, 129, 0.4);
+        }
+      }
+    }
+
+    .icon-btn-compact {
+      background: transparent;
+      border: 1px solid transparent;
+      color: #64748b;
+      padding: 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+
+      &.archive-compact-btn:hover {
+        background: rgba(239, 68, 68, 0.1);
+        color: #ef4444;
+        border-color: rgba(239, 68, 68, 0.2);
+      }
+
+      &.restore-compact-btn:hover {
+        background: rgba(16, 185, 129, 0.1);
+        color: #10b981;
+        border-color: rgba(16, 185, 129, 0.2);
+      }
+    }
+
+    .archive-tab-btn {
+      margin-left: 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--color-border);
+      color: var(--color-text-secondary);
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+
+      &.active {
+        background: rgba(99, 102, 241, 0.2);
+        color: #a5b4fc;
+        border-color: rgba(99, 102, 241, 0.4);
+      }
+
+      .archive-count {
+        font-weight: 700;
+        color: #fbbf24;
+      }
     }
   `]
 })
 export class PendingPrsComponent implements OnInit {
+  readonly store = inject(PendingPrStore);
   private readonly api = inject(ReviewApiService);
   private readonly router = inject(Router);
 
-  prs = signal<PendingPrItem[]>([]);
-  loading = signal<boolean>(true);
-  error = signal<string | null>(null);
   searchQuery = signal<string>('');
-  onlyInternalReview = signal<boolean>(true);
   startingPr = signal<number | null>(null);
 
-  filteredPrs = computed(() => {
-    const q = this.searchQuery().toLowerCase().trim();
-    if (!q) return this.prs();
+  isMineMode = signal<boolean>(false);
 
-    return this.prs().filter((item) =>
+  filteredPrs = computed(() => {
+    const sourceList = this.isMineMode() ? this.store.myPrs() : (this.store.showArchived() ? this.store.archivedPrs() : this.store.unarchivedPrs());
+    const q = this.searchQuery().toLowerCase().trim();
+    if (!q) return sourceList;
+
+    return sourceList.filter((item) =>
       item.pr_title.toLowerCase().includes(q) ||
       (item.pr_author && item.pr_author.toLowerCase().includes(q)) ||
       (item.jira_key && item.jira_key.toLowerCase().includes(q)) ||
@@ -704,28 +842,23 @@ export class PendingPrsComponent implements OnInit {
     );
   });
 
+  isLoading = computed(() => this.isMineMode() ? this.store.myPrsLoading() : this.store.loading());
+
+  private readonly route = inject(ActivatedRoute);
+
   ngOnInit(): void {
-    this.loadPendingPrs();
+    this.route.data.subscribe(data => {
+      this.isMineMode.set(data['mode'] === 'mine');
+    });
   }
 
   toggleInternalReviewFilter(event: Event): void {
     const checked = (event.target as HTMLInputElement).checked;
-    this.onlyInternalReview.set(checked);
-    this.loadPendingPrs();
+    this.store.loadPendingPrs(checked);
   }
 
-  async loadPendingPrs(): Promise<void> {
-    this.loading.set(true);
-    this.error.set(null);
-
-    try {
-      const res = await firstValueFrom(this.api.getPendingPrs(this.onlyInternalReview()));
-      this.prs.set(res.items || []);
-    } catch (err: any) {
-      this.error.set(err.message || 'Failed to load pending pull requests from Bitbucket.');
-    } finally {
-      this.loading.set(false);
-    }
+  loadPendingPrs(): void {
+    this.store.loadPendingPrs();
   }
 
   getBitbucketPrUrl(item: any): string {

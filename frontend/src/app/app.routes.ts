@@ -11,6 +11,13 @@ export const routes: Routes = [
     path: 'pending-prs',
     loadComponent: () =>
       import('./features/pending-prs/pending-prs.component').then((m) => m.PendingPrsComponent),
+    data: { mode: 'pending' }
+  },
+  {
+    path: 'my-prs',
+    loadComponent: () =>
+      import('./features/pending-prs/pending-prs.component').then((m) => m.PendingPrsComponent),
+    data: { mode: 'mine' }
   },
   {
     path: 'reviews/:id/progress',

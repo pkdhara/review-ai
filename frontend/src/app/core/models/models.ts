@@ -122,6 +122,7 @@ export interface PendingPrItem {
   updated_on?: string;
   existing_review_id?: string;
   existing_review_status?: string;
+  approvers?: string[];
 }
 
 export interface PendingPrsResponse {
