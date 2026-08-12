@@ -65,37 +65,23 @@ chmod -R g+rX,o+rX /path/to/local/git/repos/.git
 
 ---
 
-## 🛠️ How to Run on Different Servers / Environments
+## 🛠️ Quick Start Installation
 
----
+Follow these simple steps to run ReviewAI using Docker:
 
-### Scenario A: Production On-Prem / Local Server with Antigravity Bridge (Zero API Cost)
-
-Use this setup on your local workstation or local Linux server where Antigravity is logged in with your Google account.
-
-#### Step 1: Clone Repository & Configure Environment
+### Step 1: Clone Repository & Setup Environment
 ```bash
 git clone https://github.com/your-org/review-ai.git
 cd review-ai
-
-# Copy environment template
 cp backend/.env.example backend/.env
 ```
 
-#### Step 2: Configure `backend/.env`
-Edit `backend/.env` to configure your tokens:
+### Step 2: Configure Environment Credentials
+Edit `backend/.env` to configure your Bitbucket, Jira, and LLM Provider settings:
+
+#### Bitbucket & Jira Credentials
 ```ini
-# Application & Database
-APP_ENV=production
-DATABASE_URL=postgresql+asyncpg://reviewai:reviewai_pass@127.0.0.1:5432/reviewai
-REDIS_URL=redis://127.0.0.1:6379/0
-
-# LLM Provider Configuration
-LLM_PROVIDER=antigravity
-ANTIGRAVITY_MODEL=gemini-3.6-flash
-ALLOW_LLM_FALLBACK=false
-
-# Bitbucket Integration
+# Bitbucket Integration (Permissions: repositories:read & pullrequests:write)
 BITBUCKET_USERNAME=your_username
 BITBUCKET_ACCESS_TOKEN=your_bitbucket_app_password
 BITBUCKET_WORKSPACE=your_workspace_slug
@@ -104,37 +90,24 @@ BITBUCKET_WORKSPACE=your_workspace_slug
 JIRA_BASE_URL=https://your-org.atlassian.net
 JIRA_EMAIL=you@company.com
 JIRA_API_TOKEN=your_jira_api_token
-
-# Encryption Key (Generate via: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-ENCRYPTION_KEY=xCcfce12MskAaHuyMHcbGm0BKrw3y7cK1hM5UHUvTUA=
 ```
 
-#### Step 3: Launch Services with Antigravity Bridge Profile
-```bash
-# Start PostgreSQL, Redis, Antigravity Bridge, and Backend using host networking mode
-docker compose --profile bridge up -d --build
-```
+#### LLM Provider Configuration (`LLM_PROVIDER`):
 
-#### Step 4: Apply Database Migrations
-```bash
-docker compose exec backend alembic upgrade head
-```
+Set `LLM_PROVIDER` in `backend/.env` to select your backend:
 
-#### Step 5: Verify Deployment
-- **Frontend Dashboard**: Open `http://<SERVER_IP>` in your browser.
-- **Backend OpenAPI Docs**: Open `http://<SERVER_IP>:8000/docs`.
-- **Bridge Health Check**: Run `curl http://localhost:8899/health`.
-
----
-
-### Scenario B: Cloud Server Deployment with Cloud API Keys (AWS / GCP / Azure)
-
-Use this setup on standard cloud virtual machines (EC2, Compute Engine, droplets) where you connect via OpenAI, Gemini Public API, or Anthropic.
-
-#### Step 1: Configure `backend/.env` for Cloud LLM
+**Option 1: Antigravity Local LLM (Zero API Cost)**
+Routes requests through local Antigravity session (`127.0.0.1:8899`):
 ```ini
-# Choose your preferred cloud provider
-LLM_PROVIDER=openai   # Options: openai | gemini | anthropic
+LLM_PROVIDER=antigravity
+ANTIGRAVITY_MODEL=gemini-3.6-flash
+```
+
+**Option 2: Cloud API Keys (OpenAI / Gemini Public API / Anthropic)**
+Routes requests directly to external cloud LLM providers:
+```ini
+# Choose Provider: openai | gemini | anthropic
+LLM_PROVIDER=openai
 
 # OpenAI Credentials
 OPENAI_API_KEY=sk-proj-...
@@ -149,46 +122,24 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 ```
 
-#### Step 2: Start Containers
+---
+
+### Step 3: Launch Containers & Apply Migrations
+
 ```bash
+# Build & start Docker containers
 docker compose up -d --build
+
+# Run database migrations (REQUIRED on initial run to create PostgreSQL tables)
 docker compose exec backend alembic upgrade head
 ```
 
----
-
-### Scenario C: Local Development Mode (Hot Reloading)
-
-Use this mode when developing new agents, modifying FastAPI endpoints, or extending Angular components.
-
-#### 1. Start Support Infrastructure (DB & Redis)
-```bash
-docker compose up -d postgres redis
-```
-
-#### 2. Start Backend Locally
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Run migrations & start dev server
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000
-```
-
-#### 3. Start Frontend Locally
-```bash
-cd frontend
-npm install
-npm start
-# Opens http://localhost:4200 with hot-module reload
-```
+- **Frontend Dashboard**: Open `http://localhost` in your browser.
+- **Backend OpenAPI Docs**: Open `http://localhost:8000/docs`.
 
 ---
 
-## 🏗️ Architecture & Docker Services Summary
+## 🏗️ Architecture & Docker Services
 
 | Service Container | Port Mapping | Network Mode | Description |
 |-------------------|--------------|--------------|-------------|
@@ -202,7 +153,6 @@ npm start
 
 ## 🔍 Diagnostics & Health Checks
 
-### Check System Logs
 ```bash
 # View backend structured logs
 docker compose logs -f backend
@@ -210,13 +160,8 @@ docker compose logs -f backend
 # View bridge daemon discovery logs
 docker compose logs -f antigravity-bridge
 
-# View raw JSONL audit logs for specific reviews
-cat /home/pradeep/ai-logs/<REVIEW_ID>.log
-```
-
-### Run Automated Unit Tests
-```bash
-docker exec -e PYTHONPATH=. reviewai_backend pytest -v
+# Run automated unit test suite
+docker compose exec -e PYTHONPATH=. backend pytest
 ```
 
 ---
