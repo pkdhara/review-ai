@@ -219,24 +219,23 @@ class GitWorktreeManager:
 
     async def cleanup_worktree(self, repo_slug: str, review_id: str) -> None:
         """
-        Safely removes a review's worktree and prunes git worktrees.
-        Does NOT touch or modify the main working directory.
+        Safely removes a review's worktree.
+        Does NOT touch or modify the main working directory or interrupt concurrent reviews.
         """
         audit = ReviewAuditLogger(review_id)
         worktree_base = Path(self.settings.WORKTREE_BASE_DIR)
         worktree_dir = worktree_base / review_id
-
         repo_path = self.resolve_repo_path(repo_slug)
 
-        if repo_path and Path(repo_path).exists():
+        if worktree_dir.exists() and repo_path and Path(repo_path).exists():
             try:
                 await self._run_git(repo_path, "worktree", "remove", "--force", str(worktree_dir))
-                await self._run_git(repo_path, "worktree", "prune")
             except Exception as e:
                 logger.warning("Git worktree remove command warning", error=str(e))
 
         if worktree_dir.exists():
             try:
+                import shutil
                 shutil.rmtree(worktree_dir, ignore_errors=True)
             except Exception as e:
                 logger.warning("Failed directory cleanup for worktree", path=str(worktree_dir), error=str(e))

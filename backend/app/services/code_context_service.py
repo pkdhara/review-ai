@@ -5,6 +5,7 @@ on-demand method retrieval, class/component structure extraction, symbol searchi
 and per-review shared caching across AI agents for Java and TypeScript/Angular repositories.
 """
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -89,42 +90,48 @@ class CodeContextService:
             self.cache["repo_slug"] = repo_slug
             self.cache["changed_files"] = changed_files
 
-            # Extract changed methods from diff and worktree
-            changed_methods = self.detect_changed_methods(diff_text, worktree_path, changed_files)
+            # Extract changed methods from diff and worktree offloaded to thread
+            changed_methods = await asyncio.to_thread(
+                self.detect_changed_methods, diff_text, worktree_path, changed_files
+            )
             self.cache["changed_methods"] = changed_methods
 
-            # Index class/component structures for changed files
-            indexed_count = 0
-            wt_path = Path(worktree_path)
-            for f in changed_files:
-                file_path = (f.get("new") or f.get("old") or {}).get("path", "")
-                if not file_path:
-                    continue
+            # Index class/component structures for changed files offloaded to thread
+            def _index_files():
+                count = 0
+                wt_path = Path(worktree_path)
+                for f in changed_files:
+                    file_path = (f.get("new") or f.get("old") or {}).get("path", "")
+                    if not file_path:
+                        continue
 
-                full_path = wt_path / file_path
-                if full_path.exists():
-                    try:
-                        code = full_path.read_text(encoding="utf-8", errors="replace")
-                        struct = None
-                        if file_path.endswith(".java"):
-                            struct = JavaCodeParser.parse_class_structure(code, file_path)
-                        elif file_path.endswith(".ts") or file_path.endswith(".tsx"):
-                            struct = TypeScriptCodeParser.parse_class_structure(code, file_path, worktree_path)
-                        elif file_path.endswith(".html"):
-                            struct = {
-                                "file_path": file_path,
-                                "class": Path(file_path).name,
-                                "kind": "template",
-                                "template_content": code,
-                            }
+                    full_path = wt_path / file_path
+                    if full_path.exists():
+                        try:
+                            code = full_path.read_text(encoding="utf-8", errors="replace")
+                            struct = None
+                            if file_path.endswith(".java"):
+                                struct = JavaCodeParser.parse_class_structure(code, file_path)
+                            elif file_path.endswith(".ts") or file_path.endswith(".tsx"):
+                                struct = TypeScriptCodeParser.parse_class_structure(code, file_path, worktree_path)
+                            elif file_path.endswith(".html"):
+                                struct = {
+                                    "file_path": file_path,
+                                    "class": Path(file_path).name,
+                                    "kind": "template",
+                                    "template_content": code,
+                                }
 
-                        if struct:
-                            self.cache["class_structures"][file_path] = struct
-                            if struct.get("class"):
-                                self.cache["class_structures"][struct["class"]] = struct
-                            indexed_count += 1
-                    except Exception as e:
-                        logger.warning(f"[CodeContext] Failed indexing class structure for {file_path}: {e}")
+                            if struct:
+                                self.cache["class_structures"][file_path] = struct
+                                if struct.get("class"):
+                                    self.cache["class_structures"][struct["class"]] = struct
+                                count += 1
+                        except Exception as e:
+                            logger.warning(f"[CodeContext] Failed indexing class structure for {file_path}: {e}")
+                return count
+
+            indexed_count = await asyncio.to_thread(_index_files)
 
             logger.info(
                 "[CodeContext] Code Index created",

@@ -55,7 +55,7 @@ class JavaCodeParser:
                 break
 
         # Class Declaration
-        class_decl_pattern = r"((?:@\w+(?:\([^)]*\))?\s+)*)?(?:public|protected|private|abstract|final|static|\s)*\b(class|interface|enum|record)\s+([A-Za-z0-9_<>,?\s]+)"
+        class_decl_pattern = r"\b(class|interface|enum|record)\s+([A-Za-z0-9_]+)"
         class_decl_match = re.search(class_decl_pattern, code)
 
         class_name = ""
@@ -64,10 +64,9 @@ class JavaCodeParser:
         implements_interfaces = []
 
         if class_decl_match:
-            header_text = code[class_decl_match.start():code.find("{", class_decl_match.start())]
-            class_kind = class_decl_match.group(2)
-            raw_name = class_decl_match.group(3).split()[0]
-            class_name = raw_name.split("<")[0]  # strip generic params
+            header_text = code[class_decl_match.start():code.find("{", class_decl_match.start())] if "{" in code[class_decl_match.start():] else code[class_decl_match.start():]
+            class_kind = class_decl_match.group(1)
+            class_name = class_decl_match.group(2)
 
             # Extends
             ext_match = re.search(r"\bextends\s+([A-Za-z0-9_<>,?\s]+?)(?=\bimplements\b|\b{\b|$)", header_text)
@@ -81,12 +80,13 @@ class JavaCodeParser:
 
         # Fields
         fields = []
-        field_pattern = r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|protected|private)?\s*(static)?\s*(final)?\s+([A-Za-z0-9_<>?,.\[\]]+)\s+([A-Za-z0-9_]+)\s*(?:=.*)?;$"
+        field_pattern = re.compile(r"^\s*(?:@\w+\s+)*(public|protected|private)?\s*(static\s+)?(final\s+)?([A-Za-z0-9_<>?,.\[\]]+)\s+([A-Za-z0-9_]+)\s*(?:=[^;]+)?;$")
         for line in lines:
-            if ";" not in line:
+            stripped = line.strip()
+            if not stripped or ";" not in stripped or "(" in stripped or any(kw in line for kw in ("return", "class", "interface", "package", "import")):
                 continue
-            m = re.match(field_pattern, line)
-            if m and not any(kw in line for kw in ["return", "class", "interface", "void"]):
+            m = field_pattern.match(line)
+            if m:
                 vis, is_static, is_final, f_type, f_name = m.groups()
                 field_annos = [a.strip() for a in re.findall(r"@\w+", line)]
                 fields.append({
@@ -102,8 +102,10 @@ class JavaCodeParser:
         methods = []
         constructors = []
 
-        # Find method/constructor headers
-        method_hdr_pattern = r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|protected|private)?\s*(static)?\s*(final)?\s*(abstract|synchronized)?\s*([A-Za-z0-9_<>?,.\[\]]+)?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\s*\{"
+        # Find method/constructor headers without catastrophic backtracking
+        method_hdr_pattern = re.compile(
+            r"^\s*(?:@\w+\s+)*(public|protected|private)?\s*(static\s+)?(final\s+)?(abstract\s+|synchronized\s+)?([A-Za-z0-9_<>?,.\[\]]+)\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)"
+        )
         
         pending_annos = []
         for idx, line in enumerate(lines, 1):
@@ -134,9 +136,10 @@ class JavaCodeParser:
                 params = [p.strip() for p in params_raw.split(",") if p.strip()]
 
                 # Check if constructor
-                if class_name and m_name == class_name and not ret_type:
+                c_name = m_name if (class_name and m_name == class_name) else (ret_type if (class_name and ret_type == class_name) else None)
+                if c_name:
                     constructors.append({
-                        "name": m_name,
+                        "name": c_name,
                         "visibility": vis or "package-private",
                         "parameters": params,
                         "annotations": m_annos,
@@ -179,20 +182,30 @@ class JavaCodeParser:
         Uses bracket matching to extract the full body.
         """
         lines = code.splitlines()
-        hdr_regex = re.compile(rf"\b{re.escape(method_name)}\s*\([^)]*\)\s*(?:throws\s+[^{{]+)?\s*\{{")
+        hdr_regex = re.compile(rf"\b{re.escape(method_name)}\s*\([^)]*\)")
 
         start_line = -1
-        start_char_idx = -1
-
         for idx, line in enumerate(lines):
-            match = hdr_regex.search(line)
-            if match:
-                start_line = idx + 1
-                # Find start brace index in code string
-                start_char_idx = code.find("{", code.find(line))
-                break
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            if "(" in line and hdr_regex.search(line):
+                if not any(stripped.startswith(kw) for kw in ("if", "for", "while", "switch", "catch")):
+                    start_line = idx + 1
+                    break
 
-        if start_line == -1 or start_char_idx == -1:
+        if start_line == -1:
+            return None
+
+        # Build character index for start_line
+        line_offsets = []
+        curr = 0
+        for l in lines:
+            line_offsets.append(curr)
+            curr += len(l) + 1
+
+        start_char_idx = code.find("{", line_offsets[start_line - 1])
+        if start_char_idx == -1:
             return None
 
         # Bracket matching to find method body end with string/comment state tracking

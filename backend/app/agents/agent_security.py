@@ -54,7 +54,7 @@ Return a JSON array:
   "cwe": "CWE-XX or OWASP-AX:2021"
 }]
 
-Only flag genuine vulnerabilities. Return ONLY the JSON array.
+Only flag genuine vulnerabilities. If no security issues/vulnerabilities are found, return an empty JSON array []. Return ONLY the valid JSON array without any markdown text outside JSON.
 """
 
 

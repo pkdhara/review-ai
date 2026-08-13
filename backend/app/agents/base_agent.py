@@ -86,6 +86,10 @@ class BaseAgent:
             except json.JSONDecodeError:
                 pass
 
+        # 4. If no JSON brackets exist in the text (e.g. conversational response "No vulnerabilities found."), return []
+        if first_bracket == -1:
+            return []
+
         # Final fallback: attempt standard parse (will raise JSONDecodeError if invalid)
         return json.loads(text, strict=False)
 
