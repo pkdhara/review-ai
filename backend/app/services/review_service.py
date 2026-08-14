@@ -383,11 +383,18 @@ class ReviewService:
         page_size: int = 50,
     ) -> FindingListResponse:
         await self._assert_review_exists(review_id)
+        from app.agents.pr_comment_generator import generate_finding_pr_comment
         items, total = await self.findings.list_by_review(
             review_id, severity, category, approval_status, page, page_size
         )
+        result_items = []
+        for f in items:
+            schema = FindingResponse.model_validate(f)
+            if not schema.pr_comment:
+                schema.pr_comment = generate_finding_pr_comment(schema.model_dump())
+            result_items.append(schema)
         return FindingListResponse(
-            items=[FindingResponse.model_validate(f) for f in items],
+            items=result_items,
             total=total,
             page=page,
             page_size=page_size,

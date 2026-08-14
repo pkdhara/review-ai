@@ -45,6 +45,7 @@ class CodeContextService:
                 "class_structures": {},  # file_path / class_name -> structure dict
                 "methods_cache": {},     # "ClassName.methodName" -> method dict
                 "files_cache": {},       # file_path -> content
+                "targeted_context": None, # Shared per-review targeted context
                 "metrics": {
                     "class_structures_requested": 0,
                     "methods_requested": 0,
@@ -65,6 +66,7 @@ class CodeContextService:
         diff_text: str,
         changed_files: List[Dict[str, Any]],
         source_branch: Optional[str] = None,
+        bitbucket_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Initializes the local repository worktree, indexes changed files (Java & TypeScript/Angular),
@@ -84,6 +86,7 @@ class CodeContextService:
                 source_commit=source_commit,
                 review_id=self.review_id,
                 source_branch=source_branch,
+                bitbucket_token=bitbucket_token,
             )
             self.cache["worktree_path"] = worktree_path
             self.cache["source_commit"] = source_commit
@@ -133,11 +136,20 @@ class CodeContextService:
 
             indexed_count = await asyncio.to_thread(_index_files)
 
+            # Compute shared targeted context for specialist agents
+            from app.services.targeted_dependency_resolver import TargetedDependencyResolver
+            resolver = TargetedDependencyResolver(worktree_path)
+            targeted_ctx = await asyncio.to_thread(
+                resolver.analyze_and_resolve, diff_text, changed_files, self
+            )
+            self.cache["targeted_context"] = targeted_ctx
+
             logger.info(
                 "[CodeContext] Code Index created",
                 review_id=self.review_id,
                 indexed_classes=indexed_count,
                 changed_methods_count=len(changed_methods),
+                has_targeted_context=targeted_ctx.get("has_targeted_context", False),
             )
             self.audit.log_workflow_event(
                 "code_index_created",
@@ -145,6 +157,8 @@ class CodeContextService:
                     "indexed_classes": indexed_count,
                     "changed_methods_count": len(changed_methods),
                     "worktree_path": worktree_path,
+                    "has_targeted_context": targeted_ctx.get("has_targeted_context", False),
+                    "targeted_files": targeted_ctx.get("targeted_files", []),
                 },
             )
 
@@ -155,6 +169,7 @@ class CodeContextService:
                 "indexed_classes_count": indexed_count,
                 "changed_methods_count": len(changed_methods),
                 "has_local_context": bool(worktree_path and (indexed_count > 0 or len(changed_methods) > 0)),
+                "targeted_context": targeted_ctx,
             }
 
         except Exception as exc:
@@ -173,6 +188,24 @@ class CodeContextService:
                 "has_local_context": False,
                 "error": str(exc),
             }
+
+    def get_targeted_context(self, diff_text: str = "", changed_files: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Returns pre-computed targeted_context if available, or computes it on demand.
+        """
+        if self.cache.get("targeted_context"):
+            return self.cache["targeted_context"]
+
+        worktree_path = self.cache.get("worktree_path")
+        from app.services.targeted_dependency_resolver import TargetedDependencyResolver
+        resolver = TargetedDependencyResolver(worktree_path)
+        targeted_ctx = resolver.analyze_and_resolve(
+            diff_text=diff_text,
+            changed_files=changed_files or self.cache.get("changed_files", []),
+            code_context_service=self,
+        )
+        self.cache["targeted_context"] = targeted_ctx
+        return targeted_ctx
 
     def detect_changed_methods(
         self,

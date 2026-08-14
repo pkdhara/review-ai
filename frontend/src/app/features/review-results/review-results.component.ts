@@ -255,6 +255,40 @@ const CATEGORY_TABS = [
                 <div class="rec-label-sm">Recommendation</div>
                 <p>{{ finding.recommendation }}</p>
               </div>
+
+              <!-- Per-finding PR Comment Section -->
+              <div class="pr-comment-block">
+                <div class="pr-comment-header">
+                  <span class="pr-comment-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                    </svg>
+                    PR COMMENT
+                  </span>
+                  <button
+                    class="copy-pr-btn"
+                    [class.copied]="isFindingCopied(finding.id)"
+                    (click)="copyFindingPrComment(finding, $event)"
+                    [id]="'copy-pr-btn-' + finding.id"
+                    title="Copy PR comment to clipboard"
+                  >
+                    @if (isFindingCopied(finding.id)) {
+                      <span>✅ Copied!</span>
+                    } @else {
+                      <span style="display:inline-flex;align-items:center;gap:4px">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                        </svg>
+                        Copy
+                      </span>
+                    }
+                  </button>
+                </div>
+                <div class="pr-comment-text">
+                  {{ finding.pr_comment || 'PR comment unavailable' }}
+                </div>
+              </div>
             </div>
           </div>
         }
@@ -545,6 +579,59 @@ const CATEGORY_TABS = [
       border-radius: var(--radius-md); padding: 12px 16px;
       p { font-size: 0.875rem; margin: 0; }
     }
+
+    .pr-comment-block {
+      border-top: 1px solid var(--color-border);
+      padding-top: 12px;
+      margin-top: 4px;
+    }
+    .pr-comment-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .pr-comment-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #818cf8;
+    }
+    .pr-comment-text {
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: var(--color-text-primary);
+      background: rgba(99,102,241,0.05);
+      border: 1px solid rgba(99,102,241,0.15);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .copy-pr-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+      &:hover { background: var(--color-surface-2); color: var(--color-text-primary); }
+      &.copied {
+        background: rgba(34,197,94,0.15) !important;
+        border-color: rgba(34,197,94,0.35) !important;
+        color: #86efac !important;
+      }
+    }
   `]
 })
 export class ReviewResultsComponent implements OnInit {
@@ -744,6 +831,48 @@ export class ReviewResultsComponent implements OnInit {
       case 'unchanged': return 'Unchanged Line';
       default: return scope || '';
     }
+  }
+
+  // ── Per-finding PR Comment Copy ──────────────────────────────────────────
+
+  readonly copiedFindingIds = signal<Set<string>>(new Set());
+
+  isFindingCopied(id: string): boolean {
+    return this.copiedFindingIds().has(id);
+  }
+
+  copyFindingPrComment(finding: Finding, event: MouseEvent): void {
+    event.stopPropagation();
+    const text = (finding.pr_comment || '').trim();
+    if (!text) return;
+
+    const done = () => {
+      const s = new Set(this.copiedFindingIds());
+      s.add(finding.id);
+      this.copiedFindingIds.set(s);
+      setTimeout(() => {
+        const s2 = new Set(this.copiedFindingIds());
+        s2.delete(finding.id);
+        this.copiedFindingIds.set(s2);
+      }, 2500);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => this._fallbackCopy(text, done));
+    } else {
+      this._fallbackCopy(text, done);
+    }
+  }
+
+  private _fallbackCopy(text: string, onSuccess: () => void): void {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    try { document.execCommand('copy'); onSuccess(); } catch (_) {}
+    document.body.removeChild(el);
   }
 }
 

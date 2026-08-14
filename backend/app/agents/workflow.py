@@ -261,9 +261,10 @@ class ReviewWorkflow:
         if bb_err:
             logs.append(_log_entry("orchestrator", f"Bitbucket fetch failed ({bb_dur:.2f}s): {bb_err}", "error"))
         else:
+            commit_count = len(pr_ctx.get("commits", []))
             logs.append(_log_entry(
                 "orchestrator",
-                f"PR '{pr_ctx.get('pr_title', '')}' fetched in {bb_dur:.2f}s. Jira key: {pr_ctx.get('jira_key', 'not found')}",
+                f"PR '{pr_ctx.get('pr_title', '')}' fetched in {bb_dur:.2f}s — {commit_count} commit(s) found in PR #{pr_num}. Jira key: {pr_ctx.get('jira_key', 'not found')}",
             ))
 
         if jira_err:
@@ -333,11 +334,12 @@ class ReviewWorkflow:
 
         logs.append(_log_entry(
             "orchestrator",
-            f"Setting up code context for commit '{source_commit[:8] if len(source_commit) >= 8 else source_commit}'",
+            f"Fetching local project & preparing code context for commit '{source_commit[:8] if len(source_commit) >= 8 else source_commit}'",
         ))
         await self._emit({**state, "logs": logs, "current_agent": "code_context", "progress_percent": 12})
 
         t0 = time.monotonic()
+        bitbucket_token = self.settings.get("bitbucket_access_token", "")
         context_svc = CodeContextService(review_id)
         ctx_result = await context_svc.initialize_review_context(
             workspace=workspace,
@@ -346,8 +348,10 @@ class ReviewWorkflow:
             diff_text=diff_text,
             changed_files=changed_files,
             source_branch=source_branch,
+            bitbucket_token=bitbucket_token,
         )
         ctx_dur = time.monotonic() - t0
+        targeted_ctx = ctx_result.get("targeted_context") or context_svc.get_targeted_context(diff_text, changed_files)
 
         code_context_state = {
             "repo_path": context_svc.cache.get("worktree_path", ""),
@@ -360,13 +364,22 @@ class ReviewWorkflow:
             "error": ctx_result.get("error"),
         }
 
-        logs.append(_log_entry(
-            "orchestrator",
-            f"Code context ready in {ctx_dur:.2f}s — "
-            f"{ctx_result.get('indexed_classes_count', 0)} classes indexed, "
-            f"{ctx_result.get('changed_methods_count', 0)} changed methods",
-            "info" if ctx_result.get("has_local_context") else "warning",
-        ))
+        if code_context_state["has_local_context"]:
+            has_tc = targeted_ctx.get("has_targeted_context", False)
+            tc_info = f" [targeted context: {len(targeted_ctx.get('targeted_files', []))} files, {targeted_ctx.get('context_chars', 0)} chars]" if has_tc else ""
+            logs.append(_log_entry(
+                "orchestrator",
+                f"Local project fetched & indexed for full code reference in {ctx_dur:.2f}s — "
+                f"{ctx_result.get('indexed_classes_count', 0)} classes indexed, "
+                f"{ctx_result.get('changed_methods_count', 0)} changed methods{tc_info} from worktree '{code_context_state['worktree_path']}'",
+                "info",
+            ))
+        else:
+            logs.append(_log_entry(
+                "orchestrator",
+                f"Local project context unavailable ({code_context_state.get('error') or 'repo/commit not found'}) — falling back to diff-only context",
+                "warning",
+            ))
 
         self._audit.log_workflow_event("code_context_ready", data={
             "duration_s": round(ctx_dur, 3),

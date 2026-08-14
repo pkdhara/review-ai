@@ -9,7 +9,13 @@ from app.agents.state import ReviewState
 
 SYSTEM_PROMPT = """
 You are a Senior Application Security Engineer (APPSEC).
-Analyze the provided code diff for security vulnerabilities.
+Analyze the provided code diff (and optional targeted repository context) for security vulnerabilities.
+
+PROVENANCE & CONTEXT RULES:
+- Review the PR diff first. Additional repository context is supplied ONLY because the changed code depends on these specific symbols. Use this context ONLY to validate the PR change. Do not search for unrelated issues in the supplied context.
+- Distinguish evidence from diff vs evidence from targeted context vs inference.
+- You MUST NOT assume or speculate ("the security check is likely implemented elsewhere"). Verify concrete evidence.
+- Pre-existing issues not introduced or worsened by the PR MUST be classified as origin="pre_existing", classification="recommendation", affected_by_pr=false.
 
 Check ALL of the following OWASP Top 10 categories:
 
@@ -51,7 +57,10 @@ Return a JSON array:
   "review_comment": "Ready-to-post Bitbucket comment in Markdown format",
   "file_path": "...",
   "line_number": null_or_integer,
-  "cwe": "CWE-XX or OWASP-AX:2021"
+  "cwe": "CWE-XX or OWASP-AX:2021",
+  "origin": "introduced_by_pr|modified_by_pr|worsened_by_pr|pre_existing",
+  "classification": "finding|recommendation",
+  "affected_by_pr": true_or_false
 }]
 
 Only flag genuine vulnerabilities. If no security issues/vulnerabilities are found, return an empty JSON array []. Return ONLY the valid JSON array without any markdown text outside JSON.
@@ -73,21 +82,29 @@ class SecurityAgent(BaseAgent):
         if not diff:
             return {**state, "logs": logs, "findings": findings, "current_agent": self.name, "progress_percent": 66}
 
+        ctx_info = self._prepare_agent_context(state)
+
         user_prompt = f"""
 Changed files: {[self.get_file_path(f) for f in pr_context.get('changed_files', [])]}
 
 Diff:
 {diff}
+{ctx_info['extra_prompt_text']}
 """
 
         try:
             raw_findings = await self._invoke_llm_json(
                 SYSTEM_PROMPT,
                 user_prompt,
-                context_mode="diff_only",
-                repository_context=False,
-                diff_chars=len(diff),
-                context_chars=0,
+                context_mode=ctx_info["context_mode"],
+                repository_context=ctx_info["repository_context"],
+                diff_chars=ctx_info["diff_chars"],
+                context_chars=ctx_info["context_chars"],
+                targeted_context_chars=ctx_info["targeted_context_chars"],
+                targeted_files=ctx_info["targeted_files"],
+                targeted_symbols=ctx_info["targeted_symbols"],
+                dependency_triggers=ctx_info["dependency_triggers"],
+                dependency_depth=ctx_info["dependency_depth"],
             )
             for f in raw_findings:
                 findings.append(self._make_finding(
@@ -99,6 +116,9 @@ Diff:
                     file_path=f.get("file_path"),
                     line_number=f.get("line_number"),
                     evidence=f.get("evidence"),
+                    origin=f.get("origin"),
+                    classification=f.get("classification"),
+                    affected_by_pr=f.get("affected_by_pr"),
                 ))
             logs.append(self._log(state, f"Found {len(raw_findings)} security issues"))
         except Exception as exc:

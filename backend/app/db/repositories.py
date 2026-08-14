@@ -102,11 +102,14 @@ class FindingRepository:
         self.db = db
 
     async def bulk_create(self, findings: list[dict]) -> list[ReviewFinding]:
+        from app.agents.pr_comment_generator import generate_finding_pr_comment
         valid_cols = {c.name for c in ReviewFinding.__table__.columns}
-        objs = [
-            ReviewFinding(**{k: v for k, v in f.items() if k in valid_cols})
-            for f in findings
-        ]
+        objs = []
+        for f in findings:
+            # Apply deterministic fallback if LLM did not populate pr_comment
+            if not f.get("pr_comment"):
+                f["pr_comment"] = generate_finding_pr_comment(f)
+            objs.append(ReviewFinding(**{k: v for k, v in f.items() if k in valid_cols}))
         self.db.add_all(objs)
         await self.db.flush()
         return objs

@@ -283,6 +283,7 @@ class ReviewFinding(UUIDMixin, AuditMixin, Base):
     evidence:       Mapped[Optional[str]]         = mapped_column(Text)
     recommendation: Mapped[str]                   = mapped_column(Text, nullable=False)
     review_comment: Mapped[str]                   = mapped_column(Text, nullable=False)
+    pr_comment:     Mapped[Optional[str]]         = mapped_column(Text)
     edited_comment: Mapped[Optional[str]]         = mapped_column(Text)
     approval_status: Mapped[ApprovalStatus]       = mapped_column(Enum(ApprovalStatus, name="approval_status"), nullable=False, default=ApprovalStatus.pending)
     approved_by:    Mapped[Optional[str]]         = mapped_column(String(255))

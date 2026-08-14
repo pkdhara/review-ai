@@ -149,17 +149,23 @@ class SqlPerformanceAgent(BaseAgent):
             f"{len(static_result.issues)} static issue(s) found."
         ))
 
+        ctx_info = self._prepare_agent_context(state)
         # ── Layer 2: GPT-5 Contextual Analysis ───────────────────────────────
         llm_issues: list[SqlPerformanceIssue] = []
         try:
-            user_prompt = self._build_prompt(diff, files, static_result, state)
+            user_prompt = self._build_prompt(diff, files, static_result, state, ctx_info)
             raw_json    = await self._invoke_llm_json(
                 SYSTEM_PROMPT,
                 user_prompt,
-                context_mode="diff_only",
-                repository_context=False,
-                diff_chars=len(diff),
-                context_chars=0,
+                context_mode=ctx_info["context_mode"],
+                repository_context=ctx_info["repository_context"],
+                diff_chars=ctx_info["diff_chars"],
+                context_chars=ctx_info["context_chars"],
+                targeted_context_chars=ctx_info["targeted_context_chars"],
+                targeted_files=ctx_info["targeted_files"],
+                targeted_symbols=ctx_info["targeted_symbols"],
+                dependency_triggers=ctx_info["dependency_triggers"],
+                dependency_depth=ctx_info["dependency_depth"],
             )
             llm_issues  = self._parse_llm_output(raw_json, len(static_result.issues))
             logs.append(self._make_log(f"GPT-5 found {len(llm_issues)} additional issue(s)."))
@@ -224,12 +230,14 @@ class SqlPerformanceAgent(BaseAgent):
         files: list[dict],
         static_result: StaticAnalysisResult,
         state: Optional[dict] = None,
+        ctx_info: Optional[dict] = None,
     ) -> str:
         static_summary = self._format_static_issues(static_result)
         files_block    = "\n".join(
             f"  {f.get('path')}  (+{f.get('lines_added',0)} / -{f.get('lines_removed',0)})"
             for f in files[:15]
         )
+        extra_ctx = (ctx_info.get("extra_prompt_text") if ctx_info else "") or ""
 
         return f"""## Changed Files
 {files_block}
@@ -241,6 +249,7 @@ class SqlPerformanceAgent(BaseAgent):
 ```diff
 {diff}
 ```
+{extra_ctx}
 
 Find SQL performance issues NOT already listed in the static analysis above.
 Return JSON only."""

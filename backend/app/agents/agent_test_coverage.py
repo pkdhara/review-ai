@@ -10,7 +10,12 @@ from app.agents.state import ReviewState
 
 SYSTEM_PROMPT = """
 You are a Senior QA Engineer and Test Automation expert.
-Analyze the provided code changes and identify test coverage gaps.
+Analyze the provided code changes (and optional targeted repository context) and identify test coverage gaps.
+
+PROVENANCE & CONTEXT RULES:
+- Review the PR diff first. Additional repository context is supplied ONLY because the changed code depends on these specific symbols. Use this context ONLY to validate the PR change. Do not search for unrelated issues in the supplied context.
+- Distinguish evidence from diff vs evidence from targeted context vs inference.
+- Pre-existing issues not introduced or worsened by the PR MUST be classified as origin="pre_existing", classification="recommendation", affected_by_pr=false.
 
 IMPORTANT CLASSIFICATION RULE:
 Test coverage recommendations (missing unit tests, integration tests, edge case tests) are engineering recommendations (`classification: 'recommendation'`).
@@ -41,7 +46,10 @@ Return a JSON array:
   "review_comment": "Ready-to-post Bitbucket markdown comment",
   "file_path": "...",
   "line_number": null_or_integer,
-  "suggested_test_type": "unit|integration|e2e"
+  "suggested_test_type": "unit|integration|e2e",
+  "origin": "pre_existing",
+  "classification": "recommendation",
+  "affected_by_pr": false
 }]
 
 Return ONLY the JSON array.
@@ -74,12 +82,15 @@ class TestCoverageAgent(BaseAgent):
             logs.append(self._log(state, "Only TypeScript/frontend files changed — skipping test coverage check."))
             return {**state, "logs": logs, "findings": findings, "current_agent": self.name, "progress_percent": 85}
 
+        ctx_info = self._prepare_agent_context(state)
+
         user_prompt = f"""
 Changed files (excluding TypeScript/frontend files):
 {chr(10).join(non_ts_files)}
 
 Diff:
 {diff}
+{ctx_info['extra_prompt_text']}
 
 Note: Ignore all TypeScript (.ts, .tsx, .spec.ts) files and frontend component changes. Only report test coverage issues for backend/Java changes.
 """
@@ -88,10 +99,15 @@ Note: Ignore all TypeScript (.ts, .tsx, .spec.ts) files and frontend component c
             raw_findings = await self._invoke_llm_json(
                 SYSTEM_PROMPT,
                 user_prompt,
-                context_mode="diff_only",
-                repository_context=False,
-                diff_chars=len(diff),
-                context_chars=0,
+                context_mode=ctx_info["context_mode"],
+                repository_context=ctx_info["repository_context"],
+                diff_chars=ctx_info["diff_chars"],
+                context_chars=ctx_info["context_chars"],
+                targeted_context_chars=ctx_info["targeted_context_chars"],
+                targeted_files=ctx_info["targeted_files"],
+                targeted_symbols=ctx_info["targeted_symbols"],
+                dependency_triggers=ctx_info["dependency_triggers"],
+                dependency_depth=ctx_info["dependency_depth"],
             )
             for f in raw_findings:
                 fp = f.get("file_path", "") or ""

@@ -417,6 +417,16 @@ class BitbucketService:
             self.get_commits(workspace, repo_slug, pr_number),
             self.get_existing_comments(workspace, repo_slug, pr_number),
         )
+
+        logger.info(
+            "PR context fetched from Bitbucket",
+            workspace=workspace,
+            repo_slug=repo_slug,
+            pr_number=pr_number,
+            commits_count=len(commits),
+            files_changed_count=len(changed_files),
+            diff_bytes=len(diff),
+        )
         
         if not diff.strip() or not changed_files:
             raise ValueError(f"No changes found in PR #{pr_number}. The diff is empty.")

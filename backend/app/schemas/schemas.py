@@ -143,6 +143,7 @@ class FindingResponse(OrmBase):
     evidence:             Optional[str]
     recommendation:       str
     review_comment:       str
+    pr_comment:           Optional[str] = None
     edited_comment:       Optional[str]
     approval_status:      ApprovalStatus
     approved_by:          Optional[str]

@@ -120,7 +120,7 @@ class BaseAgent:
                 context_mode = "diff_only"
 
         if repository_context is None:
-            repository_context = (context_mode == "full_repository")
+            repository_context = (context_mode in ("full_repository", "targeted_context"))
 
         provider = self._get_llm_provider()
         
@@ -163,6 +163,7 @@ class BaseAgent:
                     repository_context=repository_context,
                     diff_chars=diff_chars,
                     context_chars=context_chars,
+                    **kwargs,
                 )
                 return result
             except json.JSONDecodeError as e:
@@ -437,3 +438,38 @@ class BaseAgent:
 
     def _truncate_diff(self, diff: str, max_chars: int = 12000) -> str:
         return diff[:max_chars] + "\n...[truncated]" if len(diff) > max_chars else diff
+
+    def _prepare_agent_context(self, state: ReviewState) -> dict[str, Any]:
+        """
+        Helper for specialist agents to build prompt context and determine targeted_context audit metrics.
+        """
+        pr_context = state.get("pr_context") or {}
+        diff = pr_context.get("diff", "")
+        targeted_ctx = state.get("targeted_context") or {}
+
+        diff_chars = len(diff)
+        has_targeted = bool(targeted_ctx.get("has_targeted_context")) and bool(targeted_ctx.get("context_text"))
+
+        if has_targeted:
+            context_mode = "targeted_context"
+            repository_context = True
+            extra_prompt = "\n\n" + targeted_ctx["context_text"]
+            tc_chars = targeted_ctx.get("targeted_context_chars", len(targeted_ctx["context_text"]))
+        else:
+            context_mode = "diff_only"
+            repository_context = False
+            extra_prompt = ""
+            tc_chars = 0
+
+        return {
+            "context_mode": context_mode,
+            "repository_context": repository_context,
+            "diff_chars": diff_chars,
+            "context_chars": tc_chars,
+            "targeted_context_chars": tc_chars,
+            "targeted_files": targeted_ctx.get("targeted_files", []),
+            "targeted_symbols": targeted_ctx.get("targeted_symbols", []),
+            "dependency_triggers": targeted_ctx.get("dependency_triggers", []),
+            "dependency_depth": targeted_ctx.get("dependency_depth", 0),
+            "extra_prompt_text": extra_prompt,
+        }

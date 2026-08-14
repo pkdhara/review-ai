@@ -39,6 +39,7 @@ export interface Finding {
   evidence?: string;
   recommendation: string;
   review_comment: string;
+  pr_comment?: string;
   approval_status: 'pending' | 'approved' | 'rejected';
   edited_comment?: string;
   published: boolean;

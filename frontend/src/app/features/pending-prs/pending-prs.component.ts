@@ -33,7 +33,7 @@ import { PendingPrStore } from '../../core/store/pending-pr.store';
               {{ store.onlyInternalReview() ? 'Pull requests for Jira tasks currently in Internal Review' : 'All open Bitbucket pull requests' }}
             </p>
             <p class="page-subtitle" *ngIf="isMineMode()">
-              Pull requests created by you
+              {{ store.onlyInternalReview() ? 'Pull requests created by you for Jira tasks currently in Internal Review' : 'All pull requests created by you' }}
             </p>
           </div>
         </div>

@@ -104,7 +104,7 @@ export class PendingPrStore implements OnDestroy {
     try {
       const [pendingRes, myRes] = await Promise.all([
         firstValueFrom(this.api.getPendingPrs(onlyInternal, false)),
-        firstValueFrom(this.api.getPendingPrs(false, true)) // My PRs, don't filter by internal review
+        firstValueFrom(this.api.getPendingPrs(onlyInternal, true))
       ]);
       this.prs.set(pendingRes.items || []);
       this.myPrs.set(myRes.items || []);

@@ -41,7 +41,13 @@ async def fetch_pr_node(state: ReviewState) -> dict:
             "jira_key":  jira_key,
         }
 
-        entry = {"timestamp": _now(), "agent": "pr_fetch", "message": f"Fetched PR #{pr_number} — {len(diff)} bytes diff", "level": "info"}
+        commits_count = len(pr_data.get("commits", [])) if isinstance(pr_data.get("commits"), list) else 0
+        entry = {
+            "timestamp": _now(),
+            "agent": "pr_fetch",
+            "message": f"Fetched PR #{pr_number} — {commits_count} commit(s) found, {len(diff)} bytes diff",
+            "level": "info",
+        }
         logs.append(entry)
         return {"pr_context": pr_context, "logs": logs, "current_agent": "pr_fetch", "progress_percent": 10}
 

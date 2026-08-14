@@ -56,16 +56,16 @@ class GitWorktreeManager:
         """Find the local repository path for the given repository slug."""
         return self.settings.resolve_repo_path(repo_slug)
 
-    async def _get_authenticated_remote_url(self, repo_path: str) -> Optional[str]:
+    async def _get_authenticated_remote_url(self, repo_path: str, custom_token: Optional[str] = None) -> Optional[str]:
         """
         Gets origin remote URL and injects BITBUCKET_ACCESS_TOKEN & BITBUCKET_USERNAME
         for headless git fetching over HTTPS.
         """
-        token = (getattr(self.settings, "BITBUCKET_ACCESS_TOKEN", "") or "").strip()
+        token = (custom_token or getattr(self.settings, "BITBUCKET_ACCESS_TOKEN", "") or os.environ.get("BITBUCKET_ACCESS_TOKEN", "") or "").strip()
         if not token:
             return None
 
-        code, remote_url, _ = await self._run_git(repo_path, "remote", "get-url", "origin", timeout=3.0)
+        code, remote_url, _ = await self._run_git(repo_path, "remote", "get-url", "origin", timeout=5.0)
         if code != 0 or not remote_url:
             return None
 
@@ -74,7 +74,7 @@ class GitWorktreeManager:
 
         if remote_url.startswith("https://"):
             url_no_scheme = remote_url[8:]
-            configured_username = (getattr(self.settings, "BITBUCKET_USERNAME", "") or "").strip()
+            configured_username = (getattr(self.settings, "BITBUCKET_USERNAME", "") or os.environ.get("BITBUCKET_USERNAME", "") or "").strip()
 
             if "@" in url_no_scheme:
                 url_user, url_no_scheme = url_no_scheme.rsplit("@", 1)
@@ -98,6 +98,7 @@ class GitWorktreeManager:
         repo_path: str,
         commit_sha: str,
         source_branch: Optional[str] = None,
+        bitbucket_token: Optional[str] = None,
     ) -> bool:
         """
         Fetch a missing commit ref/objects from origin remote into local repo.
@@ -109,23 +110,29 @@ class GitWorktreeManager:
         if await self.commit_exists_locally(repo_path, commit_sha):
             return True
 
-        auth_url = await self._get_authenticated_remote_url(repo_path)
+        auth_url = await self._get_authenticated_remote_url(repo_path, custom_token=bitbucket_token)
         remote_target = auth_url or "origin"
 
-        # 1. Attempt branch fetch if source_branch provided
+        # 1. Attempt targeted branch fetch if source_branch provided
         if source_branch:
-            await self._run_git(repo_path, "fetch", remote_target, source_branch, timeout=8.0)
+            clean_branch = source_branch.replace("refs/heads/", "").strip()
+            refspec = f"+refs/heads/{clean_branch}:refs/remotes/origin/{clean_branch}"
+            await self._run_git(repo_path, "fetch", remote_target, refspec, timeout=12.0)
+            if await self.commit_exists_locally(repo_path, commit_sha):
+                return True
+
+            await self._run_git(repo_path, "fetch", remote_target, clean_branch, timeout=12.0)
             if await self.commit_exists_locally(repo_path, commit_sha):
                 return True
 
         # 2. Attempt specific commit SHA fetch (if Git server allows fetching arbitrary SHAs)
-        await self._run_git(repo_path, "fetch", remote_target, commit_sha, timeout=8.0)
+        await self._run_git(repo_path, "fetch", remote_target, commit_sha, timeout=10.0)
         if await self.commit_exists_locally(repo_path, commit_sha):
             return True
 
-        # 3. Fallback: fetch remote branch heads (Bitbucket Cloud rejects raw commit SHA fetches over HTTP)
+        # 3. Fallback: fetch remote branch heads (increased timeout to 35s for large repos)
         code, _, stderr = await self._run_git(
-            repo_path, "fetch", remote_target, "+refs/heads/*:refs/remotes/origin/*", timeout=15.0
+            repo_path, "fetch", remote_target, "+refs/heads/*:refs/remotes/origin/*", timeout=35.0
         )
         if await self.commit_exists_locally(repo_path, commit_sha):
             return True
@@ -144,6 +151,7 @@ class GitWorktreeManager:
         source_commit: str,
         review_id: str,
         source_branch: Optional[str] = None,
+        bitbucket_token: Optional[str] = None,
     ) -> str:
         """
         Creates an isolated git worktree for a review detached at source_commit.
@@ -153,29 +161,39 @@ class GitWorktreeManager:
         audit = ReviewAuditLogger(review_id)
         repo_path = self.resolve_repo_path(repo_slug)
         if not repo_path or not Path(repo_path).exists():
-            msg = f"[CodeContext] Local repository not found for slug '{repo_slug}'"
+            msg = f"[CodeContext] Local project repository not found for slug '{repo_slug}'"
             logger.error(msg, repo_slug=repo_slug)
             audit.log_workflow_event("worktree_error", error=msg)
             raise ValueError(msg)
 
         logger.info(
-            "[CodeContext] Preparing worktree",
+            "[CodeContext] Local project repository located",
             repo_slug=repo_slug,
+            repo_path=repo_path,
             source_commit=source_commit,
             review_id=review_id,
         )
 
         # Always fetch latest from remote first
-        logger.info("[CodeContext] Fetching latest from remote before worktree creation", commit=source_commit)
-        await self.fetch_commit_from_remote(repo_path, source_commit, source_branch=source_branch)
+        logger.info("[CodeContext] Fetching latest commits from remote into local project before worktree creation", repo_path=repo_path, commit=source_commit)
+        await self.fetch_commit_from_remote(
+            repo_path, source_commit, source_branch=source_branch, bitbucket_token=bitbucket_token
+        )
 
         # Ensure commit exists locally after fetch
         exists = await self.commit_exists_locally(repo_path, source_commit)
         if not exists:
-            msg = f"[CodeContext] Could not locate commit {source_commit} locally or on remote"
-            logger.error(msg, repo=repo_slug, commit=source_commit)
+            msg = f"[CodeContext] Could not locate commit {source_commit} in local project at '{repo_path}' or on remote"
+            logger.error(msg, repo=repo_slug, commit=source_commit, repo_path=repo_path)
             audit.log_workflow_event("worktree_error", error=msg)
             raise RuntimeError(msg)
+
+        logger.info(
+            "[CodeContext] Commit located in local project repository",
+            repo_slug=repo_slug,
+            repo_path=repo_path,
+            commit=source_commit,
+        )
 
         worktree_base = Path(self.settings.WORKTREE_BASE_DIR)
         worktree_base.mkdir(parents=True, exist_ok=True)
@@ -196,15 +214,16 @@ class GitWorktreeManager:
         )
 
         if code != 0:
-            msg = f"[CodeContext] Failed to create worktree: {stderr or stdout}"
-            logger.error(msg, repo_slug=repo_slug, review_id=review_id)
+            msg = f"[CodeContext] Failed to create worktree from local project: {stderr or stdout}"
+            logger.error(msg, repo_slug=repo_slug, review_id=review_id, repo_path=repo_path)
             audit.log_workflow_event("worktree_creation_failed", error=msg)
             raise RuntimeError(msg)
 
         logger.info(
-            "[CodeContext] Created worktree",
+            "[CodeContext] Successfully fetched & created worktree from local project for full code reference",
             review_id=review_id,
             worktree_path=str(worktree_dir),
+            repo_path=repo_path,
             commit=source_commit,
         )
         audit.log_workflow_event(

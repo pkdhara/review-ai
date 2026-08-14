@@ -53,15 +53,46 @@ Before setting up ReviewAI, ensure your host server meets the following requirem
   - **Option B (Cloud API)**: OpenAI API key (`gpt-4o`), Gemini API key (`gemini-3.6-flash`), or Anthropic API key (`claude-3-5-sonnet`).
 
 ### 🔐 Local Git Repository Permissions
-Because the `reviewai_backend` container runs as a non-root user (`UID 999`), local repositories mounted into the container must have read/execute access permissions on their `.git` metadata directories:
 
-```bash
-# Grant read/execute access to local repositories for local worktree indexing
-chmod -R o+rX /home/pradeep/fc/
-# OR for any local repository base directory:
-chmod -R g+rX,o+rX /path/to/local/git/repos/.git
-```
-*Note: Without these read permissions, Git inside the container will report `fatal: not a git repository` and fallback to diff-only context without deep local symbol indexing.*
+Because the `reviewai_backend` container runs as a non-root user (`UID 999`), local repositories mounted into the container (`/home/pradeep/fc`) must remain accessible. 
+
+#### Why permission issues occur during daily development:
+When host user `pradeep` (UID `1001`) runs local Git operations (`git pull`, `git checkout`, `git commit`), Git creates new files inside `.git` with default host umask (`660`/`640`), blocking container user `999` from reading or fetching missing commits.
+
+#### Permanent Fix Setup:
+
+1. **Configure Git Shared Repository Mode** (ensures all newly created Git objects/refs on host are readable & writable by container UID 999):
+   ```bash
+   # Set globally
+   git config --global core.sharedRepository all
+
+   # Configure across all local projects
+   for repo in /home/pradeep/fc/*; do
+     if [ -d "$repo/.git" ]; then
+       git -C "$repo" config core.sharedRepository all
+     fi
+   done
+   ```
+
+2. **Grant Full Permissions to Local Repositories**:
+   ```bash
+   chmod -R 777 /home/pradeep/fc/
+   ```
+
+3. **Ignore File Mode (chmod) Changes in Git** (prevents `chmod -R 777` from marking unchanged source files as modified in Git):
+   ```bash
+   # Set globally
+   git config --global core.fileMode false
+
+   # Configure across all local projects
+   for repo in /home/pradeep/fc/*; do
+     if [ -d "$repo/.git" ]; then
+       git -C "$repo" config core.fileMode false
+     fi
+   done
+   ```
+
+*Note: Without `core.sharedRepository = all` and proper permissions, Git inside the container will report `fatal: not a git repository` or `Could not locate commit` and fallback to diff-only context without deep local symbol indexing.*
 
 ---
 
