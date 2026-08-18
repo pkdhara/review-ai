@@ -13,6 +13,7 @@ import { firstValueFrom } from 'rxjs';
 import { ReviewSignalStore } from '../../core/store/review.store';
 import { ReviewApiService } from '../../core/services/review-api.service';
 import { Finding } from '../../core/models/models';
+import { PdfExportService } from '../../core/services/pdf-export.service';
 
 const CATEGORY_TABS = [
   { key: null, label: 'All', icon: '🔍' },
@@ -69,6 +70,23 @@ const CATEGORY_TABS = [
             }
           </div>
           <div class="header-actions" style="display: flex; gap: 10px; align-items: center;">
+            <button
+              class="btn btn-secondary"
+              [disabled]="isDownloadingPdf() || !store.currentReview()"
+              (click)="downloadPdf()"
+              id="download-pdf-btn"
+              title="Download Review Results as a PDF report"
+            >
+              <span *ngIf="isDownloadingPdf()" class="spin-icon spinning">⏳</span>
+              <span *ngIf="!isDownloadingPdf()" style="display: flex; align-items: center; gap: 6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download PDF
+              </span>
+            </button>
             <button
               class="btn btn-primary"
               [disabled]="isRerunning() || !store.currentReview()"
@@ -639,8 +657,10 @@ export class ReviewResultsComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly api = inject(ReviewApiService);
+  private readonly pdfExportService = inject(PdfExportService);
 
   isRerunning = signal<boolean>(false);
+  isDownloadingPdf = signal<boolean>(false);
   reviewId = '';
   categoryTabs = CATEGORY_TABS;
   activeClassification = signal<'all' | 'finding' | 'recommendation'>('all');
@@ -727,6 +747,23 @@ export class ReviewResultsComponent implements OnInit {
     this.store.loadReview(this.reviewId);
     this.store.loadFindings(this.reviewId);
     this.store.loadSummary(this.reviewId);
+  }
+
+  downloadPdf(): void {
+    const review = this.store.currentReview();
+    if (!review) return;
+
+    this.isDownloadingPdf.set(true);
+    try {
+      const summary = this.store.summary();
+      const findingsToExport = this.displayedFindings();
+      this.pdfExportService.exportReviewToPdf(review, summary, findingsToExport);
+    } catch (err: any) {
+      console.error('Failed to export PDF:', err);
+      alert(`Failed to download PDF: ${err.message || 'Unknown error'}`);
+    } finally {
+      this.isDownloadingPdf.set(false);
+    }
   }
 
   async rerunReview(): Promise<void> {

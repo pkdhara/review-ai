@@ -139,12 +139,12 @@ class ReviewService:
         cfg,
         enc: EncryptionService,
     ) -> None:
-        from app.db.database import db_session
-        from app.agents.workflow import ReviewWorkflow
-
         ReviewService._active_tasks[review_id] = asyncio.current_task()
 
         try:
+            from app.db.database import db_session
+            from app.agents.workflow import ReviewWorkflow
+
             async with db_session() as db:
                 reviews = ReviewRepository(db)
                 findings_repo = FindingRepository(db)

@@ -52,6 +52,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .angular/
+package-lock.json
 
 # Logs & Worktrees
 logs/
